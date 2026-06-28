@@ -108,11 +108,20 @@ function parsePrice(text) {
   return isNaN(n) ? null : n;
 }
 
+// Reverse map: "US" → "United States" etc.
+const CODE_TO_COUNTRY = Object.fromEntries(Object.entries(COUNTRY_CODE).map(([k, v]) => [v, k]));
+
 function matchCountry(cellText) {
   const lower = cellText.toLowerCase().trim();
   for (const t of TARGET_COUNTRIES) {
     if (lower.includes(t.toLowerCase()) || t.toLowerCase().includes(lower)) return t;
   }
+  // Match 2-letter country codes in parentheses: "(US)", "(JP)", "eShop (AU)" etc.
+  const codeMatch = cellText.match(/\(([A-Z]{2})\)/);
+  if (codeMatch && CODE_TO_COUNTRY[codeMatch[1]]) return CODE_TO_COUNTRY[codeMatch[1]];
+  // Standalone 2-letter code at start: "US ", "JP "
+  const startCode = cellText.match(/^([A-Z]{2})\b/);
+  if (startCode && CODE_TO_COUNTRY[startCode[1]]) return CODE_TO_COUNTRY[startCode[1]];
   const word = lower.split(/[\s,]/)[0];
   for (const t of TARGET_COUNTRIES) {
     if (t.toLowerCase().startsWith(word) && word.length >= 4) return t;
@@ -439,21 +448,26 @@ async function scrapeViaBrowser(gameUrl, emit) {
 }
 
 async function scrapeGamePrices(gameUrl, emit) {
-  // 1. Nintendo eShop API — fastest, no Cloudflare
-  try {
-    return await scrapeViaNintendoApi(gameUrl, emit);
-  } catch (err) {
-    emit(`Nintendo API: ${err.message.slice(0, 80)} — trying HTTP scrape...`);
+  const isEshopPrices = /eshop-prices\.com/.test(gameUrl);
+  const isDekuDeals = /dekudeals\.com/.test(gameUrl);
+
+  // For eshop-prices.com: try Nintendo API first (no Cloudflare, fastest)
+  if (isEshopPrices) {
+    try {
+      return await scrapeViaNintendoApi(gameUrl, emit);
+    } catch (err) {
+      emit(`Nintendo API: ${err.message.slice(0, 80)} — trying HTTP scrape...`);
+    }
   }
 
-  // 2. Plain HTTP scrape
+  // Plain HTTP scrape (works for dekudeals.com if not Cloudflare-protected)
   try {
     return await scrapeViaHttp(gameUrl, emit);
   } catch (err) {
     emit(`HTTP scrape failed — launching browser...`);
   }
 
-  // 3. Browser with stealth (last resort)
+  // Browser with stealth (last resort)
   return await scrapeViaBrowser(gameUrl, emit);
 }
 
@@ -530,8 +544,8 @@ async function buildResults(gameUrl, emit) {
 
 app.get('/api/fetch', async (req, res) => {
   const { url } = req.query;
-  if (!url || !url.includes('eshop-prices.com')) {
-    return res.status(400).json({ error: 'Please provide a valid eshop-prices.com URL' });
+  if (!url || !/eshop-prices\.com\/games\/|dekudeals\.com\/items\//.test(url)) {
+    return res.status(400).json({ error: 'Please provide a valid eshop-prices.com or dekudeals.com URL' });
   }
 
   res.setHeader('Content-Type', 'text/event-stream');
@@ -615,7 +629,7 @@ function startTelegramBot() {
   });
   console.log('  Telegram bot active.');
 
-  const ESHOP_URL_RE = /https?:\/\/eshop-prices\.com\/games\/[^\s]+/i;
+  const ESHOP_URL_RE = /https?:\/\/(?:eshop-prices\.com\/games\/|(?:www\.)?dekudeals\.com\/items\/)[^\s]+/i;
 
   async function handleUrl(chatId, gameUrl, messageId) {
     const statusMsg = await bot.sendMessage(chatId,
@@ -641,8 +655,12 @@ function startTelegramBot() {
       await handleUrl(chatId, match[0], msg.message_id);
     } else if (/^\/start|\/help/.test(text)) {
       await bot.sendMessage(chatId,
-        '👋 Send me any *eshop\\-prices\\.com* game link and I\'ll show you the best prices in SGD\\.\n\n' +
-        'Example:\n`https://eshop\\-prices\\.com/games/17496\\-cyberpunk\\-2077\\-ultimate\\-edition`',
+        '👋 Send me a game link and I\'ll show you the best prices in SGD\\.\n\n' +
+        '*Supported sites:*\n' +
+        '• eshop\\-prices\\.com/games/\\.\\.\\.\n' +
+        '• dekudeals\\.com/items/\\.\\.\\.\n\n' +
+        '*Example:*\n`https://eshop\\-prices\\.com/games/17496\\-cyberpunk\\-2077\\-ultimate\\-edition`\n' +
+        '`https://www\\.dekudeals\\.com/items/the\\-witcher\\-3\\-wild\\-hunt`',
         { parse_mode: 'MarkdownV2' }
       );
     }

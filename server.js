@@ -7,6 +7,13 @@ chromium.use(StealthPlugin());
 const axios = require('axios');
 const cheerio = require('cheerio');
 
+// 2-letter ISO codes for Nintendo eShop API
+const COUNTRY_CODE = {
+  'United States': 'US', 'Singapore': 'SG', 'Hong Kong': 'HK',
+  'Brazil': 'BR', 'Japan': 'JP', 'Canada': 'CA',
+  'Mexico': 'MX', 'Australia': 'AU',
+};
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -155,7 +162,93 @@ async function getExchangeRates(emit) {
   return rateCache;
 }
 
-// ─── Scraping: lightweight HTTP first, Playwright fallback ────────────────────
+function formatNintendoPrice(amount, currency) {
+  const sym = { USD:'US$', SGD:'S$', HKD:'HK$', BRL:'R$', JPY:'¥', CAD:'CA$', MXN:'MX$', AUD:'A$' };
+  const prefix = sym[currency] || (currency + ' ');
+  const value = currency === 'JPY'
+    ? Math.round(amount).toLocaleString('en')
+    : parseFloat(amount).toFixed(2);
+  return `${prefix}${value}`;
+}
+
+// ─── Strategy 1: Nintendo eShop API (no Cloudflare, fast) ────────────────────
+
+async function findNsuid(gameUrl, emit) {
+  // Extract searchable name from URL slug: "17496-cyberpunk-2077-ultimate-edition"
+  const slug = gameUrl.split('/').pop().replace(/^\d+-/, '').replace(/-/g, ' ');
+  emit(`Searching Nintendo catalog for "${slug}"...`);
+
+  const q = encodeURIComponent(slug);
+
+  // Nintendo Europe search (most reliable public endpoint)
+  const euRes = await axios.get(
+    `https://searching.nintendo-europe.com/en/select?q=${q}&fq=type%3AGAME&rows=5&wt=json&fl=title,nsuid_txt`,
+    { timeout: 12000 }
+  );
+  const docs = euRes.data?.response?.docs || [];
+
+  if (!docs.length) throw new Error(`Game "${slug}" not found in Nintendo catalog`);
+
+  // Pick best match by word overlap
+  const words = slug.toLowerCase().split(' ').filter(w => w.length > 2);
+  const scored = docs.map(d => {
+    const t = (d.title || '').toLowerCase();
+    return { d, score: words.filter(w => t.includes(w)).length };
+  });
+  scored.sort((a, b) => b.score - a.score);
+  const best = scored[0].d;
+
+  const nsuid = best.nsuid_txt?.[0];
+  if (!nsuid) throw new Error('nsuid not found in Nintendo catalog response');
+
+  emit(`Found: "${best.title}" (nsuid: ${nsuid})`);
+  return { nsuid, gameName: best.title };
+}
+
+async function getNintendoPrices(nsuid, emit) {
+  emit('Fetching prices from Nintendo eShop API...');
+
+  // Query each country in parallel
+  const entries = await Promise.all(
+    Object.entries(COUNTRY_CODE).map(async ([country, code]) => {
+      try {
+        const res = await axios.get(
+          `https://api.ec.nintendo.com/v1/price?country=${code}&lang=en&ids=${nsuid}`,
+          { timeout: 10000 }
+        );
+        const p = res.data?.prices?.[0];
+        if (!p || p.sales_status === 'not_found') return [country, null];
+
+        // Prefer sale price if active
+        const price = p.discount_price || p.regular_price;
+        if (!price) return [country, null];
+
+        const amount = parseFloat(price.raw_value ?? price.amount);
+        return [country, { amount, currency: price.currency, onSale: !!p.discount_price }];
+      } catch {
+        return [country, null];
+      }
+    })
+  );
+
+  return Object.fromEntries(entries);
+}
+
+async function scrapeViaNintendoApi(gameUrl, emit) {
+  const { nsuid, gameName } = await findNsuid(gameUrl, emit);
+  const nintendoPrices = await getNintendoPrices(nsuid, emit);
+
+  // Convert to the [[country, rawPriceStr], ...] format rowsToMap expects
+  const rows = Object.entries(nintendoPrices)
+    .filter(([, data]) => data !== null)
+    .map(([country, data]) => [country, formatNintendoPrice(data.amount, data.currency)]);
+
+  if (!rows.length) throw new Error('Nintendo API returned no prices for this game');
+  emit(`Got prices for ${rows.length} of ${Object.keys(COUNTRY_CODE).length} countries.`);
+  return { title: gameName, rows };
+}
+
+// ─── Strategy 2: lightweight HTTP, Strategy 3: browser fallback ───────────────
 
 async function scrapeViaHttp(gameUrl, emit) {
   emit('Trying fast HTTP scrape...');
@@ -248,12 +341,22 @@ async function scrapeViaBrowser(gameUrl, emit) {
 }
 
 async function scrapeGamePrices(gameUrl, emit) {
+  // 1. Nintendo eShop API — fastest, no Cloudflare
+  try {
+    return await scrapeViaNintendoApi(gameUrl, emit);
+  } catch (err) {
+    emit(`Nintendo API: ${err.message.slice(0, 80)} — trying HTTP scrape...`);
+  }
+
+  // 2. Plain HTTP scrape
   try {
     return await scrapeViaHttp(gameUrl, emit);
-  } catch (httpErr) {
-    emit(`HTTP scrape failed (${httpErr.message.slice(0, 60)}), switching to browser...`);
-    return await scrapeViaBrowser(gameUrl, emit);
+  } catch (err) {
+    emit(`HTTP scrape failed — launching browser...`);
   }
+
+  // 3. Browser with stealth (last resort)
+  return await scrapeViaBrowser(gameUrl, emit);
 }
 
 // ─── Main pipeline ────────────────────────────────────────────────────────────

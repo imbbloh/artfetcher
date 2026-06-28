@@ -53,6 +53,11 @@ let rateCache = null;
 let rateCacheTime = 0;
 const RATE_TTL = 60 * 60 * 1000;
 
+// Nintendo of America Algolia key — captured live from Nintendo.com via browser intercept
+// The public key rotates; we refresh it every 12 hours
+let algoliaKeyCache = { key: null, time: 0 };
+const ALGOLIA_KEY_TTL = 12 * 60 * 60 * 1000;
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function findChromiumExecutable() {
@@ -182,6 +187,45 @@ function formatNintendoPrice(amount, currency) {
 
 // ─── Strategy 1: Nintendo eShop API (no Cloudflare, fast) ────────────────────
 
+// Capture the current Nintendo of America Algolia API key by intercepting
+// a real browser visit to Nintendo.com (not Cloudflare-protected).
+// Result is cached for 12 hours so we only do a browser launch occasionally.
+async function getAlgoliaKey(emit) {
+  const now = Date.now();
+  if (algoliaKeyCache.key && now - algoliaKeyCache.time < ALGOLIA_KEY_TTL) {
+    return algoliaKeyCache.key;
+  }
+  emit('Refreshing Algolia key from Nintendo.com...');
+  const browser = await chromium.launch({
+    executablePath: findChromiumExecutable(),
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+  });
+  try {
+    const page = await browser.newPage();
+    let capturedKey = null;
+    await page.route('**u3b6gr4ua3-dsn.algolia.net**', async (route) => {
+      const key = route.request().headers()['x-algolia-api-key'];
+      if (key && /^[a-f0-9]{32}$/.test(key)) capturedKey = key;
+      await route.continue();
+    });
+    await page.goto('https://www.nintendo.com/en-US/store/games/', {
+      waitUntil: 'load', timeout: 25000,
+    });
+    await page.waitForTimeout(3000); // let Algolia calls fire
+    await browser.close();
+    if (capturedKey) {
+      algoliaKeyCache = { key: capturedKey, time: now };
+      emit(`Algolia key refreshed`);
+      return capturedKey;
+    }
+  } catch (e) {
+    try { await browser.close(); } catch {}
+    emit(`Algolia key refresh failed: ${e.message.slice(0, 60)}`);
+  }
+  return algoliaKeyCache.key; // return stale key or null
+}
+
 async function findNsuids(gameUrl, emit) {
   const slug = gameUrl.split('/').pop().replace(/^\d+-/, '').replace(/-/g, ' ');
   const gameId = gameUrl.match(/\/games\/(\d+)/)?.[1];
@@ -216,12 +260,12 @@ async function findNsuids(gameUrl, emit) {
     emit(`EU catalog: ${nsuids.length} nsuid(s)`);
   } catch (e) { emit(`EU catalog error: ${e.message.slice(0, 60)}`); }
 
-  // 2. Japan catalog — try both the full slug and shorter queries (JP catalog may index under Japanese)
+  // 2. Japan catalog (increased timeout — JP endpoint is slow from non-JP servers)
   for (const jpQ of [q, encodeURIComponent(slug.split(' ').slice(0, 2).join(' '))]) {
     try {
       const jpRes = await axios.get(
         `https://search.nintendo.co.jp/nintendo_soft/search.json?q=${jpQ}&opt_hard=HAC&limit=10`,
-        { timeout: 10000 }
+        { timeout: 20000 }
       );
       const before = nsuids.length;
       for (const item of (jpRes.data?.result?.items || [])) {
@@ -233,25 +277,15 @@ async function findNsuids(gameUrl, emit) {
     } catch (e) { emit(`JP catalog error: ${e.message.slice(0, 60)}`); break; }
   }
 
-  // 3. Americas: try to get current Algolia key from Nintendo.com, then search
-  let algoliaKey = '9a20c93440cf63cf1a7008d75f7438bf';
-  try {
-    const homeRes = await axios.get('https://www.nintendo.com/en-US/store/games/', {
-      timeout: 10000,
-      headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' },
-    });
-    const km = homeRes.data.match(/"apiKey"\s*:\s*"([a-f0-9]{32})"/)
-      || homeRes.data.match(/ALGOLIA_API_KEY['":\s]+['"]([a-f0-9]{32})['"]/i)
-      || homeRes.data.match(/algoliaApiKey['":\s]+['"]([a-f0-9]{32})['"]/i);
-    if (km) { algoliaKey = km[1]; emit(`Algolia key fetched from Nintendo.com`); }
-  } catch { /* use hardcoded key */ }
+  // 3. Americas: get current Algolia key via browser intercept, then search
+  const algoliaKey = await getAlgoliaKey(emit);
 
   const algoliaIndexes = [
     'store_game_en_us_release_date',
     'store_game_en_us',
     'noa_aem_game_en_us',
   ];
-  for (const indexName of algoliaIndexes) {
+  for (const indexName of algoliaKey ? algoliaIndexes : []) {
     try {
       const algRes = await axios.post(
         'https://u3b6gr4ua3-dsn.algolia.net/1/indexes/*/queries',

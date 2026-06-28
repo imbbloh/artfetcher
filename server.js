@@ -360,16 +360,9 @@ async function findNsuids(gameUrl, emit) {
       }
     })() : Promise.resolve(),
 
-    // api.ec.nintendo.com catalog search for JP/HK/SG — same domain as the working price API.
-    // The eShop apps likely call v1/titles or v1/search for catalog browsing.
-    ...['JP', 'HK', 'SG'].flatMap(cc => {
-      const lang = cc === 'JP' ? 'ja' : cc === 'HK' ? 'zh' : 'en';
-      return [
-        fetchNsuidsFromUrl(`https://api.ec.nintendo.com/v1/titles?country=${cc}&lang=${lang}&q=${q}&limit=10`, `api.ec ${cc} v1/titles`, emit).then(addMany),
-        fetchNsuidsFromUrl(`https://api.ec.nintendo.com/v1/search?country=${cc}&lang=${lang}&q=${q}&limit=10`, `api.ec ${cc} v1/search`, emit).then(addMany),
-        fetchNsuidsFromUrl(`https://api.ec.nintendo.com/v1/catalog?country=${cc}&lang=${lang}&q=${q}&limit=10`, `api.ec ${cc} v1/catalog`, emit).then(addMany),
-      ];
-    }),
+    // Nintendo HK store (Magento) — product URLs contain nsuid directly (/7001XXXXXXXXXX)
+    fetchNsuidsFromUrl(`https://store.nintendo.com.hk/catalogsearch/result/?q=${q}`, 'HK store search', emit).then(addMany),
+    fetchNsuidsFromUrl(`https://store.nintendo.com.hk/search?q=${q}`, 'HK store search2', emit).then(addMany),
 
     // eshop-prices.com JSON API (403 on Render/Cloudflare IPs; kept for other deploys)
     gameId ? (async () => {
@@ -399,7 +392,7 @@ async function findNsuids(gameUrl, emit) {
     const probeSet = new Set();
     for (const base of probeBaseIds) {
       const b = BigInt(base);
-      for (let d = 1; d <= 10; d++) {
+      for (let d = 1; d <= 50; d++) {
         for (const p of [String(b + BigInt(d)), String(b - BigInt(d))]) {
           if (/^7001\d{10}$/.test(p) && !seen.has(p)) probeSet.add(p);
         }

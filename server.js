@@ -180,6 +180,49 @@ function formatNintendoPrice(amount, currency) {
   return `${prefix}${value}`;
 }
 
+// Use Playwright to load an eshop-prices.com game page and pull every 7001-prefixed nsuid
+// from the rendered HTML (eShop buy-links like ec.nintendo.com/.../titles/7001XXXXXXXXXX).
+// Runs in its own browser instance so it doesn't block the main scrape pipeline.
+async function fetchNsuidsFromEshopPricesBrowser(gameUrl, emit) {
+  if (!gameUrl.includes('eshop-prices.com')) return [];
+  emit('Launching browser to extract nsuids from eshop-prices.com...');
+  let browser;
+  try {
+    browser = await chromium.launch({
+      executablePath: findChromiumExecutable(),
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+    });
+    const page = await browser.newPage();
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
+    await page.goto(gameUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+
+    // Wait for Cloudflare challenge to clear
+    const t = await page.title();
+    if (t.includes('Just a moment') || t.includes('Attention Required')) {
+      emit('eshop-prices: Cloudflare detected, waiting...');
+      await page.waitForFunction(
+        () => !document.title.includes('Just a moment') && !document.title.includes('Attention Required'),
+        { timeout: 20000 }
+      ).catch(() => {});
+    }
+
+    // Let the page JS finish rendering price sections
+    await page.waitForTimeout(2000);
+
+    // Grab full page HTML and extract all 7001-prefixed nsuids
+    const html = await page.content();
+    const found = [...new Set((html.match(/7001\d{10}/g) || []))];
+    emit(`eshop-prices browser: ${found.length} nsuid(s) found`);
+    return found;
+  } catch (e) {
+    emit(`eshop-prices browser: ${e.message.slice(0, 70)}`);
+    return [];
+  } finally {
+    if (browser) await browser.close().catch(() => {});
+  }
+}
+
 // ─── Strategy 1: Nintendo eShop API (no Cloudflare, fast) ────────────────────
 
 // The Algolia API key is embedded as a literal in Nintendo.com's JS bundles.
@@ -372,16 +415,24 @@ async function findNsuids(gameUrl, emit) {
     fetchNsuidsFromUrl(`https://ec.nintendo.com/SG//titles?q=${q}`, 'SG// titles?q', emit).then(addMany),
     fetchNsuidsFromUrl(`https://ec.nintendo.com/SG//titles?search=${q}`, 'SG// titles?search', emit).then(addMany),
 
-    // eshop-prices.com JSON API (403 on Render/Cloudflare IPs; kept for other deploys)
-    gameId ? (async () => {
-      try {
-        const epRes = await axios.get(`https://eshop-prices.com/games/${gameId}.json`, { timeout: 8000 });
-        const before = nsuids.length;
-        extractFromText(JSON.stringify(epRes.data));
-        if (nsuids.length > before) emit(`eshop-prices API: +${nsuids.length - before} nsuid(s)`);
-        else emit('eshop-prices API: reachable but no nsuids');
-      } catch (e) { emit(`eshop-prices API: ${e.message.slice(0, 60)}`); }
-    })() : Promise.resolve(),
+    // eshop-prices.com — try JSON API first (fast, but 403 on Render/Cloudflare IPs),
+    // then fall back to browser scrape which bypasses Cloudflare via stealth Playwright.
+    (async () => {
+      let gotNsuids = false;
+      if (gameId) {
+        try {
+          const epRes = await axios.get(`https://eshop-prices.com/games/${gameId}.json`, { timeout: 8000 });
+          const before = nsuids.length;
+          extractFromText(JSON.stringify(epRes.data));
+          if (nsuids.length > before) { emit(`eshop-prices API: +${nsuids.length - before} nsuid(s)`); gotNsuids = true; }
+          else emit('eshop-prices API: reachable but no nsuids');
+        } catch (e) { emit(`eshop-prices API: ${e.message.slice(0, 60)}`); }
+      }
+      if (!gotNsuids && gameUrl.includes('eshop-prices.com')) {
+        const ids = await fetchNsuidsFromEshopPricesBrowser(gameUrl, emit);
+        addMany(ids);
+      }
+    })(),
 
   ]);
 

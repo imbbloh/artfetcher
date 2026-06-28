@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 const express = require('express');
 const path = require('path');
-const { chromium } = require('playwright-core');
+const { chromium } = require('playwright-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+chromium.use(StealthPlugin());
 const axios = require('axios');
 const cheerio = require('cheerio');
 
@@ -51,6 +53,12 @@ function findChromiumExecutable() {
   try {
     const pw = require('playwright-core');
     const p = pw.chromium.executablePath();
+    if (p && fs.existsSync(p)) return p;
+  } catch {}
+  try {
+    // playwright-extra wraps playwright-core; try directly
+    const { chromium: pwChromium } = require('playwright-core');
+    const p = pwChromium.executablePath();
     if (p && fs.existsSync(p)) return p;
   } catch {}
   const known = [

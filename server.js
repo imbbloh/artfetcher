@@ -376,7 +376,8 @@ function startTelegramBot() {
 
   let TelegramBot;
   try {
-    TelegramBot = require('node-telegram-bot-api');
+    const pkg = require('node-telegram-bot-api');
+    TelegramBot = pkg.default ?? pkg;
   } catch (e) {
     console.error('  node-telegram-bot-api not installed — bot disabled.');
     return;

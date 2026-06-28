@@ -382,35 +382,39 @@ async function findNsuids(gameUrl, emit) {
   // a small offset of the EU nsuid (e.g. Cyberpunk: EU=95547, HK=95550 (+3), JP=95201).
   // For each region, probe ±10, query that region's price API, then verify via
   // ec.nintendo.com product page to reject adjacent nsuids belonging to other games.
-  const probeKeywords = (gameName || slug)
-    .toLowerCase()
-    .split(/[\s\-:™®©,.'!?]+/)
-    .filter(w => w.length >= 4 || /^\d{3,}$/.test(w));
+  // Probe ±500 around EU catalog nsuids for JP/HK/SG.
+  // Nintendo allocates nsuids sequentially; a game's regional variants (JP, HK, SG) are
+  // often within a few hundred of the EU nsuid (same registration batch).
+  // Verification uses numeric proximity only — no page text needed, works for any language.
+  // Among all candidates with a valid price, accept the one with the SMALLEST gap from
+  // any known EU nsuid. Skip if the nearest gap exceeds MAX_GAP (likely a different game).
+  const MAX_GAP = 500n;
+  const euBigInts = euNsuids.map(id => BigInt(id));
 
   const probeBaseIds = euNsuids.slice(0, 3);
-  if (probeBaseIds.length && probeKeywords.length) {
+  if (probeBaseIds.length) {
     const probeSet = new Set();
     for (const base of probeBaseIds) {
       const b = BigInt(base);
-      for (let d = 1; d <= 20; d++) {
-        for (const p of [String(b + BigInt(d)), String(b - BigInt(d))]) {
+      for (let d = 1n; d <= MAX_GAP; d++) {
+        for (const p of [String(b + d), String(b - d)]) {
           if (/^7001\d{10}$/.test(p) && !seen.has(p)) probeSet.add(p);
         }
       }
     }
 
     const probeIds = [...probeSet];
-    const CHUNK = 50; // Nintendo price API rejects requests with too many IDs
+    const CHUNK = 50;
     const chunks = [];
     for (let i = 0; i < probeIds.length; i += CHUNK) chunks.push(probeIds.slice(i, i + CHUNK));
 
     const REGIONS = [
-      { cc: 'JP', lang: 'ja', ecPath: 'JP/ja' },
-      { cc: 'HK', lang: 'zh', ecPath: 'HK/zh' },
-      { cc: 'SG', lang: 'en', ecPath: 'SG/en' },
+      { cc: 'JP', lang: 'ja' },
+      { cc: 'HK', lang: 'zh' },
+      { cc: 'SG', lang: 'en' },
     ];
 
-    await Promise.allSettled(REGIONS.map(async ({ cc, lang, ecPath }) => {
+    await Promise.allSettled(REGIONS.map(async ({ cc, lang }) => {
       const allCandidates = [];
       for (const chunk of chunks) {
         try {
@@ -420,33 +424,21 @@ async function findNsuids(gameUrl, emit) {
           );
           for (const p of (priceRes.data?.prices || [])) {
             if (p.sales_status !== 'not_found' && (p.regular_price || p.discount_price) && !seen.has(String(p.title_id))) {
-              allCandidates.push(p);
+              allCandidates.push(String(p.title_id));
             }
           }
-        } catch (e) { emit(`${cc} probe chunk: ${e.message.slice(0, 40)}`); }
+        } catch (e) { emit(`${cc} probe: ${e.message.slice(0, 40)}`); }
       }
-      await Promise.allSettled(allCandidates.map(async (p) => {
-        const id = String(p.title_id);
-        try {
-          const pageRes = await axios.get(`https://ec.nintendo.com/${ecPath}/titles/${id}`, {
-            timeout: 8000,
-            headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': `${lang},en;q=0.8` },
-          });
-          const rawHtml = String(pageRes.data);
-          // Check only the <title> tag — searching the full page body causes false positives
-          // because sidebar "related games" sections mention other game names.
-          const titleMatch = rawHtml.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-          const titleText = (titleMatch?.[1] || '').toLowerCase();
-          if (titleText && probeKeywords.some(kw => titleText.includes(kw))) {
-            add(id);
-            emit(`${cc} probe: verified nsuid ${id}`);
-          } else {
-            emit(`${cc} probe: nsuid ${id} rejected (different game)`);
-          }
-        } catch {
-          emit(`${cc} probe: could not verify nsuid ${id}`);
-        }
-      }));
+      if (!allCandidates.length) return;
+      // Pick the candidate with the smallest numeric distance from any EU nsuid
+      const best = allCandidates
+        .map(id => ({ id, gap: euBigInts.reduce((min, eu) => { const d = eu > BigInt(id) ? eu - BigInt(id) : BigInt(id) - eu; return d < min ? d : min; }, MAX_GAP + 1n) }))
+        .filter(x => x.gap <= MAX_GAP)
+        .sort((a, b) => (a.gap < b.gap ? -1 : a.gap > b.gap ? 1 : 0))[0];
+      if (best) {
+        add(best.id);
+        emit(`${cc} probe: accepted nsuid ${best.id} (gap ${best.gap} from EU nsuid)`);
+      }
     }));
   }
 

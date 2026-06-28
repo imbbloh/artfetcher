@@ -364,6 +364,12 @@ async function findNsuids(gameUrl, emit) {
     fetchNsuidsFromUrl(`https://store.nintendo.com.hk/catalogsearch/result/?q=${q}`, 'HK store search', emit).then(addMany),
     fetchNsuidsFromUrl(`https://store.nintendo.com.hk/search?q=${q}`, 'HK store search2', emit).then(addMany),
 
+    // SG eShop uses no language code in the URL path (ec.nintendo.com/SG//titles/NSUID)
+    // Try SG catalog search with the correct double-slash path format
+    fetchNsuidsFromUrl(`https://ec.nintendo.com/SG//titles/search?q=${q}`, 'SG// titles/search', emit).then(addMany),
+    fetchNsuidsFromUrl(`https://ec.nintendo.com/SG//titles?q=${q}`, 'SG// titles?q', emit).then(addMany),
+    fetchNsuidsFromUrl(`https://ec.nintendo.com/SG//titles?search=${q}`, 'SG// titles?search', emit).then(addMany),
+
     // eshop-prices.com JSON API (403 on Render/Cloudflare IPs; kept for other deploys)
     gameId ? (async () => {
       try {

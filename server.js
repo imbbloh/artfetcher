@@ -192,43 +192,31 @@ async function scrapeViaBrowser(gameUrl, emit) {
   const browser = await chromium.launch({
     executablePath: findChromiumExecutable(),
     headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-blink-features=AutomationControlled',
-    ],
+    // Note: no --disable-blink-features=AutomationControlled — that flag is itself detectable
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
   });
   try {
-    const context = await browser.newContext({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      extraHTTPHeaders: {
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-      },
-    });
+    // Use newPage() directly so stealth plugin patches apply (not newContext)
+    const page = await browser.newPage();
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
 
-    // Hide webdriver flag that Cloudflare detects
-    await context.addInitScript(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    });
-
-    const page = await context.newPage();
     emit('Loading page...');
     await page.goto(gameUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-    // If Cloudflare challenge appears, wait for it to auto-resolve (up to 20s)
-    const isChallenge = await page.title().then(t => t.includes('Just a moment'));
-    if (isChallenge) {
-      emit('Cloudflare check detected, waiting for it to pass...');
+    // Wait for Cloudflare JS challenge to auto-resolve
+    const challengeTitle = await page.title();
+    if (challengeTitle.includes('Just a moment') || challengeTitle.includes('Attention Required')) {
+      emit('Cloudflare check detected — waiting up to 15s for it to pass...');
       await page.waitForFunction(
-        () => !document.title.includes('Just a moment'),
-        { timeout: 20000 }
+        () => !document.title.includes('Just a moment') && !document.title.includes('Attention Required'),
+        { timeout: 15000 }
       ).catch(() => {});
     }
 
-    // Wait for price table
+    // Wait for price table rows
     await page.waitForSelector('table tr', { timeout: 15000 }).catch(() => {});
+    // Small buffer for any remaining JS rendering
+    await page.waitForTimeout(500);
 
     const { title, rows } = await page.evaluate(() => {
       const tableRows = [];
@@ -236,11 +224,22 @@ async function scrapeViaBrowser(gameUrl, emit) {
         const cells = [...tr.querySelectorAll('td, th')].map((td) => td.innerText.trim());
         if (cells.length >= 2) tableRows.push(cells);
       });
-      return { title: document.title.replace(/\s*[-|].*$/, '').trim(), rows: tableRows };
+      return {
+        title: document.title.replace(/\s*[-|].*$/, '').trim(),
+        rows: tableRows,
+      };
     });
 
     await browser.close();
-    emit('Page loaded successfully.');
+
+    if (title.includes('Just a moment') || title.includes('Attention Required')) {
+      throw new Error('Cloudflare challenge did not resolve — try again in a moment');
+    }
+    if (!rows.length) {
+      throw new Error('Page loaded but no price table found');
+    }
+
+    emit(`Loaded "${title}" — ${rows.length} table rows found.`);
     return { title, rows };
   } catch (err) {
     await browser.close();
@@ -373,7 +372,7 @@ function formatTelegramMessage(data) {
     else gc = `${r.currency} ${r.effectiveAmount.toFixed(2)}`;
 
     const sgd = r.sgdPrice === 0 ? 'Free'
-      : r.sgdPrice !== null ? `S\\$${r.sgdPrice.toFixed(2)}`
+      : r.sgdPrice !== null ? `S$${r.sgdPrice.toFixed(2)}`
       : 'Not Available';
 
     lines.push(`${medal} ${flag} *${escTg(r.country)}*`);

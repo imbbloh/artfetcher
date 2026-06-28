@@ -405,6 +405,7 @@ async function findNsuids(gameUrl, emit) {
     ? euNsuids.filter(id => { const d = BigInt(id) - primaryEu; return (d < 0n ? -d : d) <= SAME_RANGE; })
     : [];
   const euBigInts = probeBaseIds.map(id => BigInt(id));
+  emit(`Probe: euNsuids=[${euNsuids.join(',')}] probeBase=[${probeBaseIds.join(',')}]`);
 
   if (probeBaseIds.length) {
     const probeSet = new Set();
@@ -456,6 +457,7 @@ async function findNsuids(gameUrl, emit) {
           }
         }
       }
+      emit(`${cc} probe: ${allCandidates.length} price candidates found`);
       if (!allCandidates.length) return;
       // Rank candidates by gap to nearest EU probe base, take top 10 for verification
       const ranked = allCandidates
@@ -463,11 +465,12 @@ async function findNsuids(gameUrl, emit) {
         .filter(x => x.gap <= MAX_GAP)
         .sort((a, b) => (a.gap < b.gap ? -1 : a.gap > b.gap ? 1 : 0))
         .slice(0, 10);
+      emit(`${cc} probe: ranked=[${ranked.map(r => `${r.id}(gap${r.gap})`).join(',')}] kws=[${probeKeywords.join(',')}]`);
 
       // Verify each candidate via page <title> tag in parallel (language-agnostic:
       // most non-Japanese games keep English title on JP/HK pages; numbers like "2077"
       // appear the same in any language).
-      const ecPath = cc === 'HK' ? 'HK/zh' : cc === 'JP' ? 'JP/ja' : `SG/en`;
+      const ecPath = cc === 'HK' ? 'HK/zh' : cc === 'JP' ? 'JP/ja' : `SG//`;
       const verified = await Promise.allSettled(ranked.map(async ({ id, gap }) => {
         try {
           const pageRes = await axios.get(`https://ec.nintendo.com/${ecPath}/titles/${id}`, {
@@ -476,20 +479,27 @@ async function findNsuids(gameUrl, emit) {
           });
           const titleTag = (String(pageRes.data).match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '').toLowerCase();
           const kwMatch = probeKeywords.some(kw => titleTag.includes(kw));
+          emit(`${cc} verify ${id}: title="${titleTag.slice(0,60)}" kwMatch=${kwMatch}`);
           return { id, gap, kwMatch };
-        } catch {
+        } catch (e) {
+          emit(`${cc} verify ${id}: error ${e.message.slice(0,40)}`);
           return { id, gap, kwMatch: false };
         }
       }));
 
-      // Priority: (1) title-verified + smallest gap, (2) unverified but gap ≤ 3 (fallback
-      // for pure-Japanese game names that don't appear in English on regional pages)
+      // Priority: (1) title-verified + smallest gap, (2) unverified but UNIQUE candidate
+      // at gap ≤ 3 (fallback for pure-Japanese game names).
+      // Don't use proximity when multiple candidates compete — require verification to
+      // disambiguate, otherwise we'd pick the numerically-closest wrong game.
       const verifiedHits = verified.filter(r => r.status === 'fulfilled' && r.value.kwMatch).map(r => r.value);
-      const proximityOnly = verified.filter(r => r.status === 'fulfilled' && !r.value.kwMatch && r.value.gap <= 3n).map(r => r.value);
+      const closeUnverified = verified.filter(r => r.status === 'fulfilled' && !r.value.kwMatch && r.value.gap <= 3n).map(r => r.value);
+      const proximityOnly = closeUnverified.length === 1 ? closeUnverified : [];
       const best = [...verifiedHits, ...proximityOnly].sort((a, b) => (a.gap < b.gap ? -1 : a.gap > b.gap ? 1 : 0))[0];
       if (best) {
         add(best.id);
         emit(`${cc} probe: accepted nsuid ${best.id} (gap ${best.gap}, verified=${best.kwMatch})`);
+      } else {
+        emit(`${cc} probe: no nsuid accepted (verifiedHits=${verifiedHits.length}, closeUnverified=${closeUnverified.length})`);
       }
     }));
   }

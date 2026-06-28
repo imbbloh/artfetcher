@@ -400,6 +400,10 @@ async function findNsuids(gameUrl, emit) {
     }
 
     const probeIds = [...probeSet];
+    const CHUNK = 50; // Nintendo price API rejects requests with too many IDs
+    const chunks = [];
+    for (let i = 0; i < probeIds.length; i += CHUNK) chunks.push(probeIds.slice(i, i + CHUNK));
+
     const REGIONS = [
       { cc: 'JP', lang: 'ja', ecPath: 'JP/ja' },
       { cc: 'HK', lang: 'zh', ecPath: 'HK/zh' },
@@ -407,33 +411,38 @@ async function findNsuids(gameUrl, emit) {
     ];
 
     await Promise.allSettled(REGIONS.map(async ({ cc, lang, ecPath }) => {
-      try {
-        const priceRes = await axios.get(
-          `https://api.ec.nintendo.com/v1/price?country=${cc}&lang=${lang}&ids=${probeIds.join(',')}`,
-          { timeout: 10000 }
-        );
-        const candidates = (priceRes.data?.prices || []).filter(p =>
-          p.sales_status !== 'not_found' && (p.regular_price || p.discount_price) && !seen.has(String(p.title_id))
-        );
-        await Promise.allSettled(candidates.map(async (p) => {
-          const id = String(p.title_id);
-          try {
-            const pageRes = await axios.get(`https://ec.nintendo.com/${ecPath}/titles/${id}`, {
-              timeout: 8000,
-              headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': `${lang},en;q=0.8` },
-            });
-            const pageText = String(pageRes.data).toLowerCase();
-            if (probeKeywords.some(kw => pageText.includes(kw))) {
-              add(id);
-              emit(`${cc} probe: verified nsuid ${id}`);
-            } else {
-              emit(`${cc} probe: nsuid ${id} rejected (different game)`);
+      const allCandidates = [];
+      for (const chunk of chunks) {
+        try {
+          const priceRes = await axios.get(
+            `https://api.ec.nintendo.com/v1/price?country=${cc}&lang=${lang}&ids=${chunk.join(',')}`,
+            { timeout: 10000 }
+          );
+          for (const p of (priceRes.data?.prices || [])) {
+            if (p.sales_status !== 'not_found' && (p.regular_price || p.discount_price) && !seen.has(String(p.title_id))) {
+              allCandidates.push(p);
             }
-          } catch {
-            emit(`${cc} probe: could not verify nsuid ${id}`);
           }
-        }));
-      } catch (e) { emit(`${cc} probe: ${e.message.slice(0, 50)}`); }
+        } catch (e) { emit(`${cc} probe chunk: ${e.message.slice(0, 40)}`); }
+      }
+      await Promise.allSettled(allCandidates.map(async (p) => {
+        const id = String(p.title_id);
+        try {
+          const pageRes = await axios.get(`https://ec.nintendo.com/${ecPath}/titles/${id}`, {
+            timeout: 8000,
+            headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': `${lang},en;q=0.8` },
+          });
+          const pageText = String(pageRes.data).toLowerCase();
+          if (probeKeywords.some(kw => pageText.includes(kw))) {
+            add(id);
+            emit(`${cc} probe: verified nsuid ${id}`);
+          } else {
+            emit(`${cc} probe: nsuid ${id} rejected (different game)`);
+          }
+        } catch {
+          emit(`${cc} probe: could not verify nsuid ${id}`);
+        }
+      }));
     }));
   }
 

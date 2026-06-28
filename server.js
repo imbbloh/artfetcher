@@ -174,40 +174,77 @@ function formatNintendoPrice(amount, currency) {
 // ─── Strategy 1: Nintendo eShop API (no Cloudflare, fast) ────────────────────
 
 async function findNsuids(gameUrl, emit) {
-  // Extract searchable name from URL slug: "17496-cyberpunk-2077-ultimate-edition"
   const slug = gameUrl.split('/').pop().replace(/^\d+-/, '').replace(/-/g, ' ');
-  emit(`Searching Nintendo catalog for "${slug}"...`);
-
+  emit(`Searching Nintendo catalogs for "${slug}"...`);
   const q = encodeURIComponent(slug);
-
-  // Nintendo Europe catalog — returns nsuid_txt array which may contain
-  // multiple regional nsuids (EU, Americas, JP, Asia)
-  const euRes = await axios.get(
-    `https://searching.nintendo-europe.com/en/select?q=${q}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
-    { timeout: 12000 }
-  );
-  const docs = euRes.data?.response?.docs || [];
-  if (!docs.length) throw new Error(`Game "${slug}" not found in Nintendo catalog`);
-
-  // Score by word overlap, pick top 3 candidates
   const words = slug.toLowerCase().split(' ').filter(w => w.length > 2);
-  const scored = docs
-    .map(d => ({ d, score: words.filter(w => (d.title || '').toLowerCase().includes(w)).length }))
-    .sort((a, b) => b.score - a.score);
 
-  // Collect ALL nsuids from the top matching results (different per region)
   const seen = new Set();
   const nsuids = [];
-  for (const { d } of scored.slice(0, 5)) {
-    for (const id of (d.nsuid_txt || [])) {
-      if (!seen.has(id)) { seen.add(id); nsuids.push(id); }
+  let gameName = '';
+  const add = (id) => { const s = String(id || ''); if (s.length > 5 && !seen.has(s)) { seen.add(s); nsuids.push(s); } };
+
+  // 1. EU/AUS catalog (covers Europe + Australia)
+  try {
+    const euRes = await axios.get(
+      `https://searching.nintendo-europe.com/en/select?q=${q}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
+      { timeout: 12000 }
+    );
+    const docs = euRes.data?.response?.docs || [];
+    const scored = docs
+      .map(d => ({ d, score: words.filter(w => (d.title || '').toLowerCase().includes(w)).length }))
+      .sort((a, b) => b.score - a.score);
+    if (scored.length && scored[0].d.title) gameName = scored[0].d.title;
+    for (const { d } of scored.slice(0, 5))
+      for (const id of (d.nsuid_txt || [])) add(id);
+    emit(`EU catalog: ${nsuids.length} nsuid(s)`);
+  } catch (e) { emit(`EU catalog error: ${e.message.slice(0, 60)}`); }
+
+  // 2. Japan catalog (separate nsuid for JP store)
+  try {
+    const jpRes = await axios.get(
+      `https://search.nintendo.co.jp/nintendo_soft/search.json?q=${q}&opt_hard=HAC&limit=10`,
+      { timeout: 10000 }
+    );
+    const before = nsuids.length;
+    for (const item of (jpRes.data?.result?.items || [])) {
+      add(item.nsuid); add(item.icode);
+      for (const id of (item.nsuid_txt || [])) add(id);
     }
-  }
+    emit(`JP catalog: +${nsuids.length - before} nsuid(s)`);
+  } catch (e) { emit(`JP catalog error: ${e.message.slice(0, 60)}`); }
 
-  if (!nsuids.length) throw new Error('No nsuids found in Nintendo catalog');
+  // 3. Americas catalog via Nintendo of America / Algolia
+  try {
+    const algRes = await axios.post(
+      'https://u3b6gr4ua3-dsn.algolia.net/1/indexes/*/queries',
+      {
+        requests: [{
+          indexName: 'store_game_en_us_release_date',
+          params: `query=${q}&hitsPerPage=5`,
+        }],
+      },
+      {
+        headers: {
+          'X-Algolia-Application-Id': 'U3B6GR4UA3',
+          'X-Algolia-API-Key': '9a20c93440cf63cf1a7008d75f7438bf',
+          'Content-Type': 'application/json',
+        },
+        timeout: 10000,
+      }
+    );
+    const before = nsuids.length;
+    for (const hit of (algRes.data?.results?.[0]?.hits || [])) {
+      add(hit.nsuid);
+      for (const id of (hit.nsuid_txt || [])) add(id);
+      if (!gameName && hit.title) gameName = hit.title;
+    }
+    emit(`Americas catalog: +${nsuids.length - before} nsuid(s)`);
+  } catch (e) { emit(`Americas catalog error: ${e.message.slice(0, 60)}`); }
 
-  const gameName = scored[0].d.title;
-  emit(`Found "${gameName}" — ${nsuids.length} nsuid(s) across regions.`);
+  if (!nsuids.length) throw new Error('No nsuids found in any Nintendo catalog');
+  if (!gameName) gameName = slug;
+  emit(`Found "${gameName}" — ${nsuids.length} total nsuid(s) across regions.`);
   return { nsuids, gameName };
 }
 

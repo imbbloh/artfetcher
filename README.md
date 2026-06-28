@@ -1,61 +1,49 @@
-# ArtFetcher — eShop Price Fetcher
+# eShop Price Fetcher
 
-Scrapes game prices from [eshop-prices.com](https://eshop-prices.com) and converts them to **SGD (Singapore Dollars)** using live Google Finance exchange rates, ranked cheapest to most expensive.
+Compare Nintendo eShop game prices worldwide, converted to **SGD (Singapore Dollars)** using live Google Finance exchange rates. Accounts for gift card denominations so you see the real spend.
 
-## Requirements
-
-- Node.js 18+
-- Google Chrome / Chromium installed (or use the pre-installed cloud env path)
-
-## Setup
+## Quick Start
 
 ```bash
+git clone https://github.com/imbbloh/artfetcher
+cd artfetcher
 npm install
+npm start
 ```
 
-## Usage
+Then open **http://localhost:3000** in your browser.
 
-```bash
-node fetcher.js <eshop-prices.com game URL>
-```
+Paste any [eshop-prices.com](https://eshop-prices.com) game link and hit **Fetch Prices**.
 
-**Example:**
+## What it does
+
+1. Scrapes the game's eShop price listing using a headless browser
+2. Fetches live exchange rates from **Google Finance** (falls back to frankfurter.app / ECB)
+3. Rounds each price **up** to the minimum gift card combination needed to cover it
+4. Displays all countries ranked cheapest → most expensive in SGD
+
+## Countries & Gift Card Denominations
+
+| Country       | Currency | Gift Card Denominations    |
+|---------------|----------|----------------------------|
+| United States | USD      | 5 / 10                     |
+| Singapore     | SGD      | Exact price                |
+| Hong Kong     | HKD      | Exact price                |
+| Brazil        | BRL      | 30 / 50                    |
+| Japan         | JPY      | 500 / 1,000                |
+| Canada        | CAD      | 10 / 20 / 25               |
+| Mexico        | MXN      | 100 / 200 / 350            |
+| Australia     | AUD      | 15                         |
+
+## CLI Usage
+
+You can also run it as a command-line tool:
 
 ```bash
 node fetcher.js https://eshop-prices.com/games/17496-cyberpunk-2077-ultimate-edition
 ```
 
-## Sample Output
+## Requirements
 
-```
-Game: Cyberpunk 2077: Ultimate Edition
-Exchange rate source: Google Finance (live)
-
-──────────────────────────────────────────────────────────────────────
- Rank   Country             Original Price        Price (SGD)
-──────────────────────────────────────────────────────────────────────
- #1     Mexico              MX$1,109.00           SGD $82.14
- #2     Brazil              R$349.90              SGD $87.23
- #3     Hong Kong           HK$629.00             SGD $109.72
- #4     Japan               ¥9,878                SGD $114.56
- #5     United States       US$59.99              SGD $80.99
- #6     Canada              CA$79.99              SGD $88.23
- #7     Singapore           S$98.00               SGD $98.00
-──────────────────────────────────────────────────────────────────────
-```
-
-## Countries Tracked
-
-| Country       | Currency |
-|---------------|----------|
-| United States | USD      |
-| Singapore     | SGD      |
-| Hong Kong     | HKD      |
-| Brazil        | BRL      |
-| Japan         | JPY      |
-| Canada        | CAD      |
-| Mexico        | MXN      |
-
-## Exchange Rates
-
-Live rates are fetched from **Google Finance** on each run. If Google Finance is unavailable, it falls back to [frankfurter.app](https://www.frankfurter.app) (ECB rates).
+- Node.js 18+
+- Google Chrome installed locally (the scraper uses your installed browser)

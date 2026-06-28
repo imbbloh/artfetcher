@@ -45,7 +45,7 @@ const COUNTRY_FLAG = {
   'Australia':     '🇦🇺',
 };
 
-// null = exact price (HKD, SGD)
+// null = exact price (no gift card rounding)
 const GIFT_CARD_DENOMS = {
   USD: [5, 10],
   SGD: null,
@@ -57,44 +57,40 @@ const GIFT_CARD_DENOMS = {
   AUD: [15],
 };
 
-const CURRENCY_SYMBOLS = {
-  USD: /US\$|USD/i,
-  SGD: /S\$|SGD/i,
-  HKD: /HK\$|HKD/i,
-  BRL: /R\$|BRL/i,
-  JPY: /¥|JP¥|JPY/i,
-  CAD: /CA\$|CAD/i,
-  MXN: /MX\$|MXN/i,
-  GBP: /£|GBP/i,
-  EUR: /€|EUR/i,
-  AUD: /A\$|AUD/i,
-};
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function findChromiumExecutable() {
   const fs = require('fs');
-  const candidates = [
-    process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
+
+  // 1. Try playwright-core's managed download location
+  try {
+    const pw = require('playwright-core');
+    const p = pw.chromium.executablePath();
+    if (p && fs.existsSync(p)) return p;
+  } catch {}
+
+  // 2. Explicit env override
+  const envPath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
+  if (envPath) { try { if (fs.existsSync(envPath)) return envPath; } catch {} }
+
+  // 3. Known static paths (cloud envs + local installs)
+  const known = [
     '/opt/pw-browsers/chromium',
     '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
-    // Common local Chrome paths
     '/usr/bin/google-chrome',
     '/usr/bin/chromium-browser',
     '/usr/bin/chromium',
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
     'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-  ].filter(Boolean);
+  ];
+  for (const p of known) { try { if (fs.existsSync(p)) return p; } catch {} }
 
-  for (const p of candidates) {
-    try { if (fs.existsSync(p)) return p; } catch {}
-  }
-  return undefined; // let playwright-core find it
+  return undefined;
 }
 
 function minGiftCardAmount(price, denoms) {
-  if (!denoms || denoms.length === 0) return price;
+  if (!denoms || !denoms.length) return price;
   const target = Math.ceil(price);
   const maxSearch = target + Math.max(...denoms) * 2;
   const reachable = new Uint8Array(maxSearch + 1);
@@ -131,10 +127,64 @@ function matchCountry(cellText) {
   return null;
 }
 
-// ─── Scrapers ─────────────────────────────────────────────────────────────────
+// ─── Core pipeline ────────────────────────────────────────────────────────────
+
+async function getExchangeRates(emit) {
+  const currencies = Object.values(COUNTRY_CURRENCY).filter((c) => c !== 'SGD').join(',');
+
+  // Primary: Google Finance (via browser)
+  emit('Fetching live exchange rates from Google Finance...');
+  let browser;
+  try {
+    browser = await chromium.launch({
+      executablePath: findChromiumExecutable(),
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    });
+    const page = await browser.newPage({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    });
+    const rates = { SGD: 1 };
+    for (const currency of currencies.split(',')) {
+      try {
+        await page.goto(`https://www.google.com/finance/quote/${currency}-SGD`, {
+          waitUntil: 'domcontentloaded', timeout: 12000,
+        });
+        const rate = await page.evaluate(() => {
+          const el =
+            document.querySelector('[data-last-price]') ||
+            document.querySelector('.IsqQVc') ||
+            document.querySelector('[jsname="ip75Cb"]') ||
+            document.querySelector('.YMlKec.fxKbKc');
+          if (!el) return null;
+          const text = el.getAttribute('data-last-price') || el.innerText;
+          const n = parseFloat(text.replace(/,/g, ''));
+          return isNaN(n) ? null : n;
+        });
+        if (rate) {
+          rates[currency] = rate;
+          emit(`Rate: 1 ${currency} = ${rate.toFixed(4)} SGD`);
+        }
+      } catch {}
+    }
+    await browser.close();
+    if (Object.keys(rates).length > 1) return { rates, source: 'Google Finance (live)' };
+  } catch {
+    if (browser) await browser.close().catch(() => {});
+  }
+
+  // Fallback: frankfurter.app (ECB daily rates, no browser needed)
+  emit('Falling back to frankfurter.app (ECB rates)...');
+  const res = await axios.get(`https://api.frankfurter.app/latest?from=SGD&to=${currencies}`, { timeout: 10000 });
+  const sgdRates = { SGD: 1 };
+  for (const [cur, rate] of Object.entries(res.data.rates)) {
+    sgdRates[cur] = 1 / rate;
+  }
+  return { rates: sgdRates, source: 'frankfurter.app / ECB (daily)' };
+}
 
 async function scrapeGamePrices(gameUrl, emit) {
-  emit('status', 'Launching browser...');
+  emit('Launching browser to scrape prices...');
   const browser = await chromium.launch({
     executablePath: findChromiumExecutable(),
     headless: true,
@@ -144,7 +194,7 @@ async function scrapeGamePrices(gameUrl, emit) {
     const page = await browser.newPage({
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     });
-    emit('status', 'Loading game page...');
+    emit('Loading game page...');
     await page.goto(gameUrl, { waitUntil: 'networkidle', timeout: 30000 });
     await page.waitForSelector('table, [class*="price"], [class*="country"]', { timeout: 10000 }).catch(() => {});
 
@@ -173,63 +223,7 @@ async function scrapeGamePrices(gameUrl, emit) {
   }
 }
 
-async function getExchangeRates(emit) {
-  const currencies = Object.values(COUNTRY_CURRENCY).filter((c) => c !== 'SGD');
-
-  // Try Google Finance first
-  emit('status', 'Fetching live exchange rates from Google Finance...');
-  let browser;
-  try {
-    browser = await chromium.launch({
-      executablePath: findChromiumExecutable(),
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    });
-    const page = await browser.newPage({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    });
-    const rates = { SGD: 1 };
-    for (const currency of currencies) {
-      try {
-        await page.goto(`https://www.google.com/finance/quote/${currency}-SGD`, {
-          waitUntil: 'domcontentloaded', timeout: 12000,
-        });
-        const rate = await page.evaluate(() => {
-          const el =
-            document.querySelector('[data-last-price]') ||
-            document.querySelector('.IsqQVc') ||
-            document.querySelector('[jsname="ip75Cb"]') ||
-            document.querySelector('.YMlKec.fxKbKc');
-          if (!el) return null;
-          const text = el.getAttribute('data-last-price') || el.innerText;
-          const n = parseFloat(text.replace(/,/g, ''));
-          return isNaN(n) ? null : n;
-        });
-        if (rate) rates[currency] = rate;
-        emit('status', `Got rate: 1 ${currency} = ${rate ? rate.toFixed(4) : '?'} SGD`);
-      } catch { /* skip */ }
-    }
-    await browser.close();
-    if (Object.keys(rates).length > 1) return { rates, source: 'Google Finance (live)' };
-  } catch (err) {
-    if (browser) await browser.close().catch(() => {});
-  }
-
-  // Fallback: frankfurter.app
-  emit('status', 'Google Finance unavailable, trying frankfurter.app (ECB rates)...');
-  const currencyList = currencies.join(',');
-  const res = await axios.get(`https://api.frankfurter.app/latest?from=SGD&to=${currencyList}`, { timeout: 10000 });
-  const sgdRates = { SGD: 1 };
-  for (const [cur, rate] of Object.entries(res.data.rates)) {
-    sgdRates[cur] = 1 / rate;
-  }
-  return { rates: sgdRates, source: 'frankfurter.app / ECB' };
-}
-
-// ─── Main pipeline ────────────────────────────────────────────────────────────
-
-async function fetchPrices(gameUrl, emit) {
-  // Run both in parallel
+async function buildResults(gameUrl, emit) {
   const [rateResult, scrapeResult] = await Promise.all([
     getExchangeRates(emit),
     scrapeGamePrices(gameUrl, emit),
@@ -238,9 +232,8 @@ async function fetchPrices(gameUrl, emit) {
   const { rates: sgdRates, source: rateSource } = rateResult;
   const { title, rows } = scrapeResult;
 
-  emit('status', 'Processing results...');
+  emit('Processing results...');
 
-  // Build price map
   const priceMap = {};
   for (const row of rows) {
     if (row.length < 2) continue;
@@ -255,7 +248,6 @@ async function fetchPrices(gameUrl, emit) {
     }
   }
 
-  // Build results
   const results = [];
   for (const country of TARGET_COUNTRIES) {
     const rawPrice = priceMap[country];
@@ -301,7 +293,7 @@ async function fetchPrices(gameUrl, emit) {
   };
 }
 
-// ─── SSE Route ────────────────────────────────────────────────────────────────
+// ─── Web: SSE endpoint ────────────────────────────────────────────────────────
 
 app.get('/api/fetch', async (req, res) => {
   const { url } = req.query;
@@ -314,20 +306,122 @@ app.get('/api/fetch', async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
 
-  const emit = (type, data) => {
-    res.write(`data: ${JSON.stringify({ type, data })}\n\n`);
-  };
+  const emit = (msg) => res.write(`data: ${JSON.stringify({ type: 'status', data: msg })}\n\n`);
 
   try {
-    const result = await fetchPrices(url, emit);
-    emit('result', result);
+    const result = await buildResults(url, emit);
+    res.write(`data: ${JSON.stringify({ type: 'result', data: result })}\n\n`);
   } catch (err) {
-    emit('error', err.message);
+    res.write(`data: ${JSON.stringify({ type: 'error', data: err.message })}\n\n`);
   } finally {
     res.end();
   }
 });
 
+// ─── Telegram bot ─────────────────────────────────────────────────────────────
+
+function formatTelegramMessage(data) {
+  const MEDAL = ['🥇', '🥈', '🥉'];
+  const lines = [];
+
+  lines.push(`🎮 *${escTg(data.gameName)}*`);
+  lines.push('');
+  lines.push('`' + 'Rank  Country          Gift Card    SGD Cost' + '`');
+  lines.push('`' + '─'.repeat(44) + '`');
+
+  let rank = 0;
+  for (const r of data.results) {
+    const flag = COUNTRY_FLAG[r.country] || '';
+    const hasPrice = r.sgdPrice !== null;
+    if (hasPrice) rank++;
+
+    const rankStr = hasPrice
+      ? (MEDAL[rank - 1] || `#${rank} `)
+      : '➖  ';
+
+    const country = r.country.padEnd(16);
+
+    let gc;
+    if (!r.rawPrice) gc = 'N/A';
+    else if (r.effectiveAmount === 0) gc = 'Free';
+    else if (r.denoms) gc = `${r.currency} ${r.effectiveAmount.toLocaleString()}`;
+    else gc = `${r.currency} exact`;
+
+    const sgd = r.sgdPrice === 0
+      ? 'Free'
+      : r.sgdPrice !== null
+      ? `S$${r.sgdPrice.toFixed(2)}`
+      : 'N/A';
+
+    lines.push(`${rankStr} ${flag} ${escTg(r.country)}`);
+    lines.push(`     Listed: ${escTg(r.rawPrice || 'Not Available')}  →  Gift card: *${escTg(gc)}*  →  *${escTg(sgd)}*`);
+    lines.push('');
+  }
+
+  lines.push(`📊 _Rates: ${escTg(data.rateSource)}_`);
+  return lines.join('\n');
+}
+
+function escTg(text) {
+  if (text === null || text === undefined) return '';
+  return String(text).replace(/([_*[\]()~`>#+\-=|{}.!\\])/g, '\\$1');
+}
+
+function startTelegramBot() {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) {
+    console.log('  No TELEGRAM_BOT_TOKEN set — Telegram bot disabled.');
+    return;
+  }
+
+  const TelegramBot = require('node-telegram-bot-api');
+  const bot = new TelegramBot(token, { polling: true });
+
+  console.log('  Telegram bot started.');
+
+  const ESHOP_URL_RE = /https?:\/\/eshop-prices\.com\/games\/[^\s]+/i;
+
+  async function handleUrl(chatId, gameUrl, messageId) {
+    await bot.sendMessage(chatId, '🔍 Fetching prices\\.\\.\\. this takes about 30–60 seconds\\.', {
+      parse_mode: 'MarkdownV2',
+      reply_to_message_id: messageId,
+    });
+
+    try {
+      const data = await buildResults(gameUrl, (msg) => {
+        // silently discard status updates in Telegram (no streaming)
+      });
+      const text = formatTelegramMessage(data);
+      await bot.sendMessage(chatId, text, { parse_mode: 'MarkdownV2' });
+    } catch (err) {
+      await bot.sendMessage(chatId, `❌ Error: ${err.message}`);
+    }
+  }
+
+  bot.on('message', async (msg) => {
+    const chatId = msg.chat.id;
+    const text = msg.text || '';
+    const match = text.match(ESHOP_URL_RE);
+
+    if (match) {
+      await handleUrl(chatId, match[0], msg.message_id);
+    } else if (text === '/start' || text === '/help') {
+      await bot.sendMessage(chatId,
+        '👋 Send me any *eshop\\-prices\\.com* game link and I\'ll show you the best prices in SGD\\.\n\n' +
+        'Example:\n`https://eshop-prices\\.com/games/17496-cyberpunk-2077-ultimate-edition`',
+        { parse_mode: 'MarkdownV2' }
+      );
+    }
+  });
+
+  bot.on('polling_error', (err) => console.error('Telegram polling error:', err.message));
+}
+
+// ─── Start ────────────────────────────────────────────────────────────────────
+
 app.listen(PORT, () => {
-  console.log(`\n  eShop Price Fetcher running at http://localhost:${PORT}\n`);
+  console.log(`\n  eShop Price Fetcher`);
+  console.log(`  Web UI → http://localhost:${PORT}`);
+  startTelegramBot();
+  console.log('');
 });

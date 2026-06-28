@@ -475,7 +475,7 @@ function formatTelegramMessage(data) {
     else gc = `${r.currency} ${r.effectiveAmount.toFixed(2)}`;
 
     const sgd = r.sgdPrice === 0 ? 'Free'
-      : r.sgdPrice !== null ? `S$${r.sgdPrice.toFixed(2)}`
+      : r.sgdPrice !== null ? escTg(`S$${r.sgdPrice.toFixed(2)}`)
       : 'Not Available';
 
     lines.push(`${medal} ${flag} *${escTg(r.country)}*`);

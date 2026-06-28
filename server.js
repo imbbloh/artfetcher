@@ -392,7 +392,7 @@ async function findNsuids(gameUrl, emit) {
     const probeSet = new Set();
     for (const base of probeBaseIds) {
       const b = BigInt(base);
-      for (let d = 1; d <= 50; d++) {
+      for (let d = 1; d <= 20; d++) {
         for (const p of [String(b + BigInt(d)), String(b - BigInt(d))]) {
           if (/^7001\d{10}$/.test(p) && !seen.has(p)) probeSet.add(p);
         }
@@ -432,8 +432,12 @@ async function findNsuids(gameUrl, emit) {
             timeout: 8000,
             headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': `${lang},en;q=0.8` },
           });
-          const pageText = String(pageRes.data).toLowerCase();
-          if (probeKeywords.some(kw => pageText.includes(kw))) {
+          const rawHtml = String(pageRes.data);
+          // Check only the <title> tag — searching the full page body causes false positives
+          // because sidebar "related games" sections mention other game names.
+          const titleMatch = rawHtml.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+          const titleText = (titleMatch?.[1] || '').toLowerCase();
+          if (titleText && probeKeywords.some(kw => titleText.includes(kw))) {
             add(id);
             emit(`${cc} probe: verified nsuid ${id}`);
           } else {

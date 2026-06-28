@@ -384,64 +384,64 @@ async function findNsuids(gameUrl, emit) {
 
   ]);
 
-  // ── Phase 3: JP nsuid probe (only for games where JP nsuid is adjacent to US) ──
-  // Nintendo often assigns consecutive nsuids to the same title across regions (e.g. Zelda US+1=JP).
-  // Probe ±3 around known nsuids and verify each hit belongs to THIS game before accepting.
-  // Without verification the probe finds nsuids for OTHER games that happen to be adjacent.
-  const jpKeywords = (gameName || slug)
+  // ── Phase 3: Regional nsuid probe around EU catalog nsuids ───────────────────
+  // EU catalog nsuids are confirmed for this game. JP/HK/SG nsuids are often within
+  // a small offset of the EU nsuid (e.g. Cyberpunk: EU=95547, HK=95550 (+3), JP=95201).
+  // For each region, probe ±10, query that region's price API, then verify via
+  // ec.nintendo.com product page to reject adjacent nsuids belonging to other games.
+  const probeKeywords = (gameName || slug)
     .toLowerCase()
     .split(/[\s\-:™®©,.'!?]+/)
-    .filter(w => w.length >= 4 || /^\d{3,}$/.test(w)); // words ≥4 chars or numbers ≥3 digits
+    .filter(w => w.length >= 4 || /^\d{3,}$/.test(w));
 
-  // Only probe if JP wasn't already found by catalog search
-  const jpAlreadyFound = nsuids.some(id => {
-    // A crude heuristic: JP nsuids tend to be the one accepted by JP price API.
-    // We'll just skip the probe if we have >1 nsuid (catalog likely found JP).
-    return false; // always attempt probe; verification makes it safe
-  });
-
-  // Probe around EU catalog nsuids (confirmed for this game) rather than arbitrary sorted nsuids.
-  // Limit to ±5 — if JP nsuid is further away, the catalog search (Phase 2) must find it instead.
-  const probeBaseIds = euNsuids.length ? euNsuids : [];
-  const probeSet = new Set();
-  for (const base of probeBaseIds.slice(0, 3)) {
-    const b = BigInt(base);
-    for (let d = 1; d <= 5; d++) {
-      for (const p of [String(b + BigInt(d)), String(b - BigInt(d))]) {
-        if (/^7001\d{10}$/.test(p) && !seen.has(p)) probeSet.add(p);
+  const probeBaseIds = euNsuids.slice(0, 3);
+  if (probeBaseIds.length && probeKeywords.length) {
+    const probeSet = new Set();
+    for (const base of probeBaseIds) {
+      const b = BigInt(base);
+      for (let d = 1; d <= 10; d++) {
+        for (const p of [String(b + BigInt(d)), String(b - BigInt(d))]) {
+          if (/^7001\d{10}$/.test(p) && !seen.has(p)) probeSet.add(p);
+        }
       }
     }
-  }
-  if (probeSet.size && jpKeywords.length) {
-    try {
-      const jpRes = await axios.get(
-        `https://api.ec.nintendo.com/v1/price?country=JP&lang=ja&ids=${[...probeSet].join(',')}`,
-        { timeout: 10000 }
-      );
-      // Verify each probe hit before accepting — fetch the JP eShop product page
-      // and check that game keywords appear in the page content.
-      const candidates = (jpRes.data?.prices || []).filter(p =>
-        p.sales_status !== 'not_found' && (p.regular_price || p.discount_price) && !seen.has(String(p.title_id))
-      );
-      await Promise.allSettled(candidates.map(async (p) => {
-        const id = String(p.title_id);
-        try {
-          const pageRes = await axios.get(`https://ec.nintendo.com/JP/ja/titles/${id}`, {
-            timeout: 8000,
-            headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'ja,en;q=0.9' },
-          });
-          const pageText = String(pageRes.data).toLowerCase();
-          if (jpKeywords.some(kw => pageText.includes(kw))) {
-            add(id);
-            emit(`JP probe: verified nsuid ${id}`);
-          } else {
-            emit(`JP probe: nsuid ${id} rejected (different game)`);
+
+    const probeIds = [...probeSet];
+    const REGIONS = [
+      { cc: 'JP', lang: 'ja', ecPath: 'JP/ja' },
+      { cc: 'HK', lang: 'zh', ecPath: 'HK/zh' },
+      { cc: 'SG', lang: 'en', ecPath: 'SG/en' },
+    ];
+
+    await Promise.allSettled(REGIONS.map(async ({ cc, lang, ecPath }) => {
+      try {
+        const priceRes = await axios.get(
+          `https://api.ec.nintendo.com/v1/price?country=${cc}&lang=${lang}&ids=${probeIds.join(',')}`,
+          { timeout: 10000 }
+        );
+        const candidates = (priceRes.data?.prices || []).filter(p =>
+          p.sales_status !== 'not_found' && (p.regular_price || p.discount_price) && !seen.has(String(p.title_id))
+        );
+        await Promise.allSettled(candidates.map(async (p) => {
+          const id = String(p.title_id);
+          try {
+            const pageRes = await axios.get(`https://ec.nintendo.com/${ecPath}/titles/${id}`, {
+              timeout: 8000,
+              headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': `${lang},en;q=0.8` },
+            });
+            const pageText = String(pageRes.data).toLowerCase();
+            if (probeKeywords.some(kw => pageText.includes(kw))) {
+              add(id);
+              emit(`${cc} probe: verified nsuid ${id}`);
+            } else {
+              emit(`${cc} probe: nsuid ${id} rejected (different game)`);
+            }
+          } catch {
+            emit(`${cc} probe: could not verify nsuid ${id}`);
           }
-        } catch {
-          emit(`JP probe: could not verify nsuid ${id}`);
-        }
-      }));
-    } catch (e) { emit(`JP probe: ${e.message.slice(0, 50)}`); }
+        }));
+      } catch (e) { emit(`${cc} probe: ${e.message.slice(0, 50)}`); }
+    }));
   }
 
   if (!nsuids.length) throw new Error('No nsuids found in any Nintendo catalog');

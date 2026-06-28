@@ -173,58 +173,66 @@ function formatNintendoPrice(amount, currency) {
 
 // ─── Strategy 1: Nintendo eShop API (no Cloudflare, fast) ────────────────────
 
-async function findNsuid(gameUrl, emit) {
+async function findNsuids(gameUrl, emit) {
   // Extract searchable name from URL slug: "17496-cyberpunk-2077-ultimate-edition"
   const slug = gameUrl.split('/').pop().replace(/^\d+-/, '').replace(/-/g, ' ');
   emit(`Searching Nintendo catalog for "${slug}"...`);
 
   const q = encodeURIComponent(slug);
 
-  // Nintendo Europe search (most reliable public endpoint)
+  // Nintendo Europe catalog — returns nsuid_txt array which may contain
+  // multiple regional nsuids (EU, Americas, JP, Asia)
   const euRes = await axios.get(
-    `https://searching.nintendo-europe.com/en/select?q=${q}&fq=type%3AGAME&rows=5&wt=json&fl=title,nsuid_txt`,
+    `https://searching.nintendo-europe.com/en/select?q=${q}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
     { timeout: 12000 }
   );
   const docs = euRes.data?.response?.docs || [];
-
   if (!docs.length) throw new Error(`Game "${slug}" not found in Nintendo catalog`);
 
-  // Pick best match by word overlap
+  // Score by word overlap, pick top 3 candidates
   const words = slug.toLowerCase().split(' ').filter(w => w.length > 2);
-  const scored = docs.map(d => {
-    const t = (d.title || '').toLowerCase();
-    return { d, score: words.filter(w => t.includes(w)).length };
-  });
-  scored.sort((a, b) => b.score - a.score);
-  const best = scored[0].d;
+  const scored = docs
+    .map(d => ({ d, score: words.filter(w => (d.title || '').toLowerCase().includes(w)).length }))
+    .sort((a, b) => b.score - a.score);
 
-  const nsuid = best.nsuid_txt?.[0];
-  if (!nsuid) throw new Error('nsuid not found in Nintendo catalog response');
+  // Collect ALL nsuids from the top matching results (different per region)
+  const seen = new Set();
+  const nsuids = [];
+  for (const { d } of scored.slice(0, 5)) {
+    for (const id of (d.nsuid_txt || [])) {
+      if (!seen.has(id)) { seen.add(id); nsuids.push(id); }
+    }
+  }
 
-  emit(`Found: "${best.title}" (nsuid: ${nsuid})`);
-  return { nsuid, gameName: best.title };
+  if (!nsuids.length) throw new Error('No nsuids found in Nintendo catalog');
+
+  const gameName = scored[0].d.title;
+  emit(`Found "${gameName}" — ${nsuids.length} nsuid(s) across regions.`);
+  return { nsuids, gameName };
 }
 
-async function getNintendoPrices(nsuid, emit) {
-  emit('Fetching prices from Nintendo eShop API...');
+async function getNintendoPrices(nsuids, emit) {
+  emit('Querying Nintendo eShop API per country...');
 
-  // Query each country in parallel
+  // Pass ALL nsuids at once per country — API returns whichever is valid for that region
+  const idsParam = nsuids.join(',');
+
   const entries = await Promise.all(
     Object.entries(COUNTRY_CODE).map(async ([country, code]) => {
       try {
         const res = await axios.get(
-          `https://api.ec.nintendo.com/v1/price?country=${code}&lang=en&ids=${nsuid}`,
+          `https://api.ec.nintendo.com/v1/price?country=${code}&lang=en&ids=${idsParam}`,
           { timeout: 10000 }
         );
-        const p = res.data?.prices?.[0];
-        if (!p || p.sales_status === 'not_found') return [country, null];
-
-        // Prefer sale price if active
-        const price = p.discount_price || p.regular_price;
-        if (!price) return [country, null];
-
-        const amount = parseFloat(price.raw_value ?? price.amount);
-        return [country, { amount, currency: price.currency, onSale: !!p.discount_price }];
+        // Find first price that isn't "not_found"
+        for (const p of (res.data?.prices || [])) {
+          if (p.sales_status === 'not_found') continue;
+          const price = p.discount_price || p.regular_price;
+          if (!price) continue;
+          const amount = parseFloat(price.raw_value ?? price.amount);
+          return [country, { amount, currency: price.currency, onSale: !!p.discount_price }];
+        }
+        return [country, null];
       } catch {
         return [country, null];
       }
@@ -235,10 +243,9 @@ async function getNintendoPrices(nsuid, emit) {
 }
 
 async function scrapeViaNintendoApi(gameUrl, emit) {
-  const { nsuid, gameName } = await findNsuid(gameUrl, emit);
-  const nintendoPrices = await getNintendoPrices(nsuid, emit);
+  const { nsuids, gameName } = await findNsuids(gameUrl, emit);
+  const nintendoPrices = await getNintendoPrices(nsuids, emit);
 
-  // Convert to the [[country, rawPriceStr], ...] format rowsToMap expects
   const rows = Object.entries(nintendoPrices)
     .filter(([, data]) => data !== null)
     .map(([country, data]) => [country, formatNintendoPrice(data.amount, data.currency)]);

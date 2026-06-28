@@ -187,15 +187,15 @@ function formatNintendoPrice(amount, currency) {
 
 // ─── Strategy 1: Nintendo eShop API (no Cloudflare, fast) ────────────────────
 
-// Capture the current Nintendo of America Algolia API key by intercepting
-// a real browser visit to Nintendo.com (not Cloudflare-protected).
-// Result is cached for 12 hours so we only do a browser launch occasionally.
+// Capture the Nintendo of America Algolia API key by intercepting a browser
+// visit to Nintendo.com (not Cloudflare-protected). The key rotates; we
+// cache it for 12 hours and only do a browser launch when it expires.
 async function getAlgoliaKey(emit) {
   const now = Date.now();
   if (algoliaKeyCache.key && now - algoliaKeyCache.time < ALGOLIA_KEY_TTL) {
     return algoliaKeyCache.key;
   }
-  emit('Refreshing Algolia key from Nintendo.com...');
+  emit('Capturing Algolia key from Nintendo.com...');
   const browser = await chromium.launch({
     executablePath: findChromiumExecutable(),
     headless: true,
@@ -204,26 +204,40 @@ async function getAlgoliaKey(emit) {
   try {
     const page = await browser.newPage();
     let capturedKey = null;
+    let captureResolve;
+    const capturePromise = new Promise(r => { captureResolve = r; });
+
     await page.route('**u3b6gr4ua3-dsn.algolia.net**', async (route) => {
       const key = route.request().headers()['x-algolia-api-key'];
       if (key && /^[a-f0-9]{32}$/.test(key)) capturedKey = key;
+      captureResolve?.(); captureResolve = null;
       await route.continue();
     });
-    await page.goto('https://www.nintendo.com/en-US/store/games/', {
-      waitUntil: 'load', timeout: 25000,
-    });
-    await page.waitForTimeout(3000); // let Algolia calls fire
+
+    // Fire navigation WITHOUT awaiting — domcontentloaded fires quickly, then
+    // JavaScript runs and makes Algolia calls which we intercept above.
+    page.goto('https://www.nintendo.com/en-US/search/?q=mario', {
+      waitUntil: 'domcontentloaded', timeout: 30000,
+    }).catch(() => {});
+
+    // Wait up to 20s for any Algolia request to be intercepted
+    await Promise.race([
+      capturePromise,
+      new Promise(r => setTimeout(r, 20000)),
+    ]);
+
     await browser.close();
     if (capturedKey) {
       algoliaKeyCache = { key: capturedKey, time: now };
-      emit(`Algolia key refreshed`);
+      emit('Algolia key captured');
       return capturedKey;
     }
+    emit('No Algolia request intercepted');
   } catch (e) {
     try { await browser.close(); } catch {}
-    emit(`Algolia key refresh failed: ${e.message.slice(0, 60)}`);
+    emit(`Algolia key capture error: ${e.message.slice(0, 60)}`);
   }
-  return algoliaKeyCache.key; // return stale key or null
+  return algoliaKeyCache.key;
 }
 
 async function findNsuids(gameUrl, emit) {
@@ -236,108 +250,115 @@ async function findNsuids(gameUrl, emit) {
   const seen = new Set();
   const nsuids = [];
   let gameName = '';
-  // Only accept 14-digit nsuids starting with 7001 (Switch nsuid format)
   const add = (id) => {
     const s = String(id || '');
     if (/^7001\d{10}$/.test(s) && !seen.has(s)) { seen.add(s); nsuids.push(s); }
   };
-  // Extract any 14-digit nsuid from an arbitrary string
   const extractFromText = (text) => { for (const m of (String(text || '').match(/7001\d{10}/g) || [])) add(m); };
 
-  // 1. EU/AUS catalog (covers Europe + Australia)
-  try {
-    const euRes = await axios.get(
-      `https://searching.nintendo-europe.com/en/select?q=${q}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
-      { timeout: 12000 }
-    );
-    const docs = euRes.data?.response?.docs || [];
-    const scored = docs
-      .map(d => ({ d, score: words.filter(w => (d.title || '').toLowerCase().includes(w)).length }))
-      .sort((a, b) => b.score - a.score);
-    if (scored.length && scored[0].d.title) gameName = scored[0].d.title;
-    for (const { d } of scored.slice(0, 5))
-      for (const id of (d.nsuid_txt || [])) add(id);
-    emit(`EU catalog: ${nsuids.length} nsuid(s)`);
-  } catch (e) { emit(`EU catalog error: ${e.message.slice(0, 60)}`); }
+  // Run all catalog searches in parallel — EU is fast, JP/Algolia are slow,
+  // running them concurrently keeps total time to ~max(EU, Algolia) instead of sequential sum.
+  await Promise.allSettled([
 
-  // 2. Japan catalog (increased timeout — JP endpoint is slow from non-JP servers)
-  for (const jpQ of [q, encodeURIComponent(slug.split(' ').slice(0, 2).join(' '))]) {
-    try {
-      const jpRes = await axios.get(
-        `https://search.nintendo.co.jp/nintendo_soft/search.json?q=${jpQ}&opt_hard=HAC&limit=10`,
-        { timeout: 20000 }
-      );
-      const before = nsuids.length;
-      for (const item of (jpRes.data?.result?.items || [])) {
-        add(item.nsuid);
-        extractFromText(item.link_url || item.url || item.store_link || '');
-        extractFromText(JSON.stringify(item));
+    // EU/AUS catalog (covers Europe + Australia)
+    (async () => {
+      try {
+        const euRes = await axios.get(
+          `https://searching.nintendo-europe.com/en/select?q=${q}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
+          { timeout: 12000 }
+        );
+        const docs = euRes.data?.response?.docs || [];
+        const scored = docs
+          .map(d => ({ d, score: words.filter(w => (d.title || '').toLowerCase().includes(w)).length }))
+          .sort((a, b) => b.score - a.score);
+        if (scored.length && scored[0].d.title) gameName = scored[0].d.title;
+        const before = nsuids.length;
+        for (const { d } of scored.slice(0, 5))
+          for (const id of (d.nsuid_txt || [])) add(id);
+        emit(`EU catalog: +${nsuids.length - before} nsuid(s)`);
+      } catch (e) { emit(`EU catalog error: ${e.message.slice(0, 60)}`); }
+    })(),
+
+    // Japan catalog (may timeout — endpoint is geo-restricted from non-JP servers)
+    (async () => {
+      for (const jpQ of [q, encodeURIComponent(slug.split(' ').slice(0, 2).join(' '))]) {
+        try {
+          const jpRes = await axios.get(
+            `https://search.nintendo.co.jp/nintendo_soft/search.json?q=${jpQ}&opt_hard=HAC&limit=10`,
+            { timeout: 15000 }
+          );
+          const before = nsuids.length;
+          for (const item of (jpRes.data?.result?.items || [])) {
+            add(item.nsuid);
+            extractFromText(item.link_url || item.url || item.store_link || '');
+            extractFromText(JSON.stringify(item));
+          }
+          if (nsuids.length > before) { emit(`JP catalog: +${nsuids.length - before} nsuid(s)`); break; }
+        } catch (e) { emit(`JP catalog: ${e.message.slice(0, 40)}`); break; }
       }
-      if (nsuids.length > before) { emit(`JP catalog (${decodeURIComponent(jpQ)}): +${nsuids.length - before}`); break; }
-    } catch (e) { emit(`JP catalog error: ${e.message.slice(0, 60)}`); break; }
-  }
+    })(),
 
-  // 3. Americas: get current Algolia key via browser intercept, then search
-  const algoliaKey = await getAlgoliaKey(emit);
-
-  const algoliaIndexes = [
-    'store_game_en_us_release_date',
-    'store_game_en_us',
-    'noa_aem_game_en_us',
-  ];
-  for (const indexName of algoliaKey ? algoliaIndexes : []) {
-    try {
-      const algRes = await axios.post(
-        'https://u3b6gr4ua3-dsn.algolia.net/1/indexes/*/queries',
-        { requests: [{ indexName, params: `query=${q}&hitsPerPage=5` }] },
-        {
-          headers: {
-            'X-Algolia-Application-Id': 'U3B6GR4UA3',
-            'X-Algolia-API-Key': algoliaKey,
-            'Content-Type': 'application/json',
-          },
-          timeout: 10000,
+    // Americas via Nintendo of America / Algolia (key captured via browser intercept)
+    (async () => {
+      const algoliaKey = await getAlgoliaKey(emit);
+      if (!algoliaKey) return;
+      const algoliaIndexes = ['store_game_en_us_release_date', 'store_game_en_us', 'noa_aem_game_en_us'];
+      for (const indexName of algoliaIndexes) {
+        try {
+          const algRes = await axios.post(
+            'https://u3b6gr4ua3-dsn.algolia.net/1/indexes/*/queries',
+            { requests: [{ indexName, params: `query=${q}&hitsPerPage=5` }] },
+            {
+              headers: {
+                'X-Algolia-Application-Id': 'U3B6GR4UA3',
+                'X-Algolia-API-Key': algoliaKey,
+                'Content-Type': 'application/json',
+              },
+              timeout: 10000,
+            }
+          );
+          const hits = algRes.data?.results?.[0]?.hits || [];
+          const before = nsuids.length;
+          for (const hit of hits) {
+            add(hit.nsuid);
+            for (const id of (hit.nsuid_txt || [])) add(id);
+            extractFromText(JSON.stringify(hit));
+            if (!gameName && hit.title) gameName = hit.title;
+          }
+          emit(`Algolia ${indexName}: ${hits.length} hits, +${nsuids.length - before} nsuids`);
+          if (nsuids.length > before) break;
+        } catch (e) {
+          emit(`Algolia ${indexName}: ${e.message.slice(0, 50)}`);
+          if (e.response?.status === 403) algoliaKeyCache.time = 0; // invalidate stale key
         }
-      );
-      const hits = algRes.data?.results?.[0]?.hits || [];
-      const before = nsuids.length;
-      for (const hit of hits) {
-        add(hit.nsuid);
-        for (const id of (hit.nsuid_txt || [])) add(id);
-        extractFromText(JSON.stringify(hit));
-        if (!gameName && hit.title) gameName = hit.title;
       }
-      emit(`Algolia ${indexName}: ${hits.length} hits, +${nsuids.length - before} nsuids`);
-      if (nsuids.length > before) break;
-    } catch (e) { emit(`Algolia ${indexName} error: ${e.message.slice(0, 60)}`); }
-  }
+    })(),
 
-  // 4. Fallback: Nintendo.com US product page (no-JS HTTP fetch, nsuid in page HTML)
-  {
-    const nintendoSlug = gameUrl.split('/').pop().replace(/^\d+-/, '') + '-switch';
-    try {
-      const before = nsuids.length;
-      const pageRes = await axios.get(
-        `https://www.nintendo.com/en-US/store/products/${nintendoSlug}/`,
-        {
-          timeout: 10000,
-          headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
-        }
-      );
-      extractFromText(pageRes.data);
-      if (nsuids.length > before) emit(`Nintendo.com US page: +${nsuids.length - before} nsuid(s)`);
-    } catch { /* 404 or redirect — slug didn't match */ }
-  }
+    // Nintendo.com US product page — nsuid embedded in page HTML/JSON
+    (async () => {
+      const nintendoSlug = gameUrl.split('/').pop().replace(/^\d+-/, '') + '-switch';
+      try {
+        const before = nsuids.length;
+        const pageRes = await axios.get(
+          `https://www.nintendo.com/en-US/store/products/${nintendoSlug}/`,
+          { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' } }
+        );
+        extractFromText(pageRes.data);
+        if (nsuids.length > before) emit(`Nintendo.com US: +${nsuids.length - before} nsuid(s)`);
+      } catch { }
+    })(),
 
-  // 5. Fallback: eshop-prices.com JSON API (no Cloudflare on API endpoints)
-  if (gameId) {
-    try {
-      const before = nsuids.length;
-      const epRes = await axios.get(`https://eshop-prices.com/games/${gameId}.json`, { timeout: 8000 });
-      extractFromText(JSON.stringify(epRes.data));
-      if (nsuids.length > before) emit(`eshop-prices API: +${nsuids.length - before} nsuid(s)`);
-    } catch { /* not available */ }
-  }
+    // eshop-prices.com JSON API (may bypass Cloudflare)
+    gameId ? (async () => {
+      try {
+        const before = nsuids.length;
+        const epRes = await axios.get(`https://eshop-prices.com/games/${gameId}.json`, { timeout: 8000 });
+        extractFromText(JSON.stringify(epRes.data));
+        if (nsuids.length > before) emit(`eshop-prices API: +${nsuids.length - before} nsuid(s)`);
+      } catch { }
+    })() : Promise.resolve(),
+
+  ]);
 
   if (!nsuids.length) throw new Error('No nsuids found in any Nintendo catalog');
   if (!gameName) gameName = slug;

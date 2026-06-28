@@ -392,7 +392,7 @@ async function findNsuids(gameUrl, emit) {
   // (e.g. Dave the Diver: 060373 and 111453). Probing around 111453 finds a different
   // game's JP nsuid at gap 1, beating the correct 060371 at gap 2 from 060373.
   // Filtering to the primary range prevents this cross-range false positive.
-  const MAX_GAP = 500n;
+  const MAX_GAP = 50n;
   const SAME_RANGE = 10000n; // EU nsuids within this distance of the smallest are "primary"
   // Keywords for title-tag verification (language-agnostic: numbers + short proper nouns)
   const probeKeywords = (gameName || slug).toLowerCase()

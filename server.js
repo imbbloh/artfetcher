@@ -384,20 +384,24 @@ async function findNsuids(gameUrl, emit) {
   ]);
 
   // ── Phase 3: Regional nsuid probe around EU catalog nsuids ───────────────────
-  // EU catalog nsuids are confirmed for this game. JP/HK/SG nsuids are often within
-  // a small offset of the EU nsuid (e.g. Cyberpunk: EU=95547, HK=95550 (+3), JP=95201).
-  // For each region, probe ±10, query that region's price API, then verify via
-  // ec.nintendo.com product page to reject adjacent nsuids belonging to other games.
-  // Probe ±500 around EU catalog nsuids for JP/HK/SG.
-  // Nintendo allocates nsuids sequentially; a game's regional variants (JP, HK, SG) are
-  // often within a few hundred of the EU nsuid (same registration batch).
-  // Verification uses numeric proximity only — no page text needed, works for any language.
-  // Among all candidates with a valid price, accept the one with the SMALLEST gap from
-  // any known EU nsuid. Skip if the nearest gap exceeds MAX_GAP (likely a different game).
+  // Probe ±500 around EU catalog nsuids for JP/HK/SG. Accept the candidate per region
+  // with the smallest numeric gap to ANY probe-base nsuid (language-agnostic).
+  //
+  // Key constraint: only probe around EU nsuids in the SAME numeric range as the smallest
+  // EU nsuid. The EU catalog can return nsuids from multiple editions in different ranges
+  // (e.g. Dave the Diver: 060373 and 111453). Probing around 111453 finds a different
+  // game's JP nsuid at gap 1, beating the correct 060371 at gap 2 from 060373.
+  // Filtering to the primary range prevents this cross-range false positive.
   const MAX_GAP = 500n;
-  const euBigInts = euNsuids.map(id => BigInt(id));
+  const SAME_RANGE = 10000n; // EU nsuids within this distance of the smallest are "primary"
 
-  const probeBaseIds = euNsuids.slice(0, 3);
+  const euSorted = [...euNsuids].sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1));
+  const primaryEu = euSorted.length ? BigInt(euSorted[0]) : null;
+  const probeBaseIds = primaryEu
+    ? euNsuids.filter(id => { const d = BigInt(id) - primaryEu; return (d < 0n ? -d : d) <= SAME_RANGE; })
+    : [];
+  const euBigInts = probeBaseIds.map(id => BigInt(id));
+
   if (probeBaseIds.length) {
     const probeSet = new Set();
     for (const base of probeBaseIds) {
@@ -420,14 +424,25 @@ async function findNsuids(gameUrl, emit) {
       { cc: 'SG', lang: 'en' },
     ];
 
+    // Throttle: run 3 chunks at a time per region to avoid hammering the price API
+    // (all-parallel caused rate limiting that broke the subsequent main price query)
+    async function chunkedFetch(cc, lang) {
+      const results = [];
+      for (let i = 0; i < chunks.length; i += 3) {
+        const batch = chunks.slice(i, i + 3);
+        const batchResults = await Promise.allSettled(batch.map(chunk =>
+          axios.get(
+            `https://api.ec.nintendo.com/v1/price?country=${cc}&lang=${lang}&ids=${chunk.join(',')}`,
+            { timeout: 10000 }
+          )
+        ));
+        results.push(...batchResults);
+      }
+      return results;
+    }
+
     await Promise.allSettled(REGIONS.map(async ({ cc, lang }) => {
-      // Run all chunks in parallel per region (3 regions already run in parallel above)
-      const chunkResults = await Promise.allSettled(chunks.map(chunk =>
-        axios.get(
-          `https://api.ec.nintendo.com/v1/price?country=${cc}&lang=${lang}&ids=${chunk.join(',')}`,
-          { timeout: 10000 }
-        )
-      ));
+      const chunkResults = await chunkedFetch(cc, lang);
       const allCandidates = [];
       for (const r of chunkResults) {
         if (r.status !== 'fulfilled') continue;

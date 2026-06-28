@@ -374,8 +374,17 @@ function startTelegramBot() {
     return;
   }
 
-  const TelegramBot = require('node-telegram-bot-api');
-  const bot = new TelegramBot(token, { polling: true });
+  let TelegramBot;
+  try {
+    TelegramBot = require('node-telegram-bot-api');
+  } catch (e) {
+    console.error('  node-telegram-bot-api not installed — bot disabled.');
+    return;
+  }
+
+  const bot = new TelegramBot(token, {
+    polling: { interval: 2000, autoStart: true, params: { timeout: 10 } },
+  });
 
   console.log('  Telegram bot started.');
 
@@ -418,6 +427,13 @@ function startTelegramBot() {
 }
 
 // ─── Start ────────────────────────────────────────────────────────────────────
+
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled rejection:', err?.message || err);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err?.message || err);
+});
 
 app.listen(PORT, () => {
   console.log(`\n  eShop Price Fetcher`);

@@ -195,8 +195,9 @@ async function scrapeGamePrices(gameUrl, emit) {
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     });
     emit('Loading game page...');
-    await page.goto(gameUrl, { waitUntil: 'networkidle', timeout: 30000 });
-    await page.waitForSelector('table, [class*="price"], [class*="country"]', { timeout: 10000 }).catch(() => {});
+    await page.goto(gameUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    // Wait for the price table to appear (up to 15s)
+    await page.waitForSelector('table tr, [class*="price"], [class*="country"]', { timeout: 15000 }).catch(() => {});
 
     const { title, rows } = await page.evaluate(() => {
       const tableRows = [];

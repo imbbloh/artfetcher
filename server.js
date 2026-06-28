@@ -415,19 +415,21 @@ async function findNsuids(gameUrl, emit) {
     ];
 
     await Promise.allSettled(REGIONS.map(async ({ cc, lang }) => {
+      // Run all chunks in parallel per region (3 regions already run in parallel above)
+      const chunkResults = await Promise.allSettled(chunks.map(chunk =>
+        axios.get(
+          `https://api.ec.nintendo.com/v1/price?country=${cc}&lang=${lang}&ids=${chunk.join(',')}`,
+          { timeout: 10000 }
+        )
+      ));
       const allCandidates = [];
-      for (const chunk of chunks) {
-        try {
-          const priceRes = await axios.get(
-            `https://api.ec.nintendo.com/v1/price?country=${cc}&lang=${lang}&ids=${chunk.join(',')}`,
-            { timeout: 10000 }
-          );
-          for (const p of (priceRes.data?.prices || [])) {
-            if (p.sales_status !== 'not_found' && (p.regular_price || p.discount_price) && !seen.has(String(p.title_id))) {
-              allCandidates.push(String(p.title_id));
-            }
+      for (const r of chunkResults) {
+        if (r.status !== 'fulfilled') continue;
+        for (const p of (r.value.data?.prices || [])) {
+          if (p.sales_status !== 'not_found' && (p.regular_price || p.discount_price) && !seen.has(String(p.title_id))) {
+            allCandidates.push(String(p.title_id));
           }
-        } catch (e) { emit(`${cc} probe: ${e.message.slice(0, 40)}`); }
+        }
       }
       if (!allCandidates.length) return;
       // Pick the candidate with the smallest numeric distance from any EU nsuid

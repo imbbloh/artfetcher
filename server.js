@@ -448,19 +448,14 @@ async function scrapeViaBrowser(gameUrl, emit) {
 }
 
 async function scrapeGamePrices(gameUrl, emit) {
-  const isEshopPrices = /eshop-prices\.com/.test(gameUrl);
-  const isDekuDeals = /dekudeals\.com/.test(gameUrl);
-
-  // For eshop-prices.com: try Nintendo API first (no Cloudflare, fastest)
-  if (isEshopPrices) {
-    try {
-      return await scrapeViaNintendoApi(gameUrl, emit);
-    } catch (err) {
-      emit(`Nintendo API: ${err.message.slice(0, 80)} — trying HTTP scrape...`);
-    }
+  // Nintendo API works for both sites — just needs the game slug, no Cloudflare
+  try {
+    return await scrapeViaNintendoApi(gameUrl, emit);
+  } catch (err) {
+    emit(`Nintendo API: ${err.message.slice(0, 80)} — trying HTTP scrape...`);
   }
 
-  // Plain HTTP scrape (works for dekudeals.com if not Cloudflare-protected)
+  // Plain HTTP scrape (fallback — blocked by Cloudflare on both sites in practice)
   try {
     return await scrapeViaHttp(gameUrl, emit);
   } catch (err) {

@@ -175,6 +175,7 @@ function formatNintendoPrice(amount, currency) {
 
 async function findNsuids(gameUrl, emit) {
   const slug = gameUrl.split('/').pop().replace(/^\d+-/, '').replace(/-/g, ' ');
+  const gameId = gameUrl.match(/\/games\/(\d+)/)?.[1];
   emit(`Searching Nintendo catalogs for "${slug}"...`);
   const q = encodeURIComponent(slug);
   const words = slug.toLowerCase().split(' ').filter(w => w.length > 2);
@@ -182,7 +183,13 @@ async function findNsuids(gameUrl, emit) {
   const seen = new Set();
   const nsuids = [];
   let gameName = '';
-  const add = (id) => { const s = String(id || ''); if (s.length > 5 && !seen.has(s)) { seen.add(s); nsuids.push(s); } };
+  // Only accept 14-digit nsuids starting with 7001 (Switch nsuid format)
+  const add = (id) => {
+    const s = String(id || '');
+    if (/^7001\d{10}$/.test(s) && !seen.has(s)) { seen.add(s); nsuids.push(s); }
+  };
+  // Extract any 14-digit nsuid from an arbitrary string
+  const extractFromText = (text) => { for (const m of (String(text || '').match(/7001\d{10}/g) || [])) add(m); };
 
   // 1. EU/AUS catalog (covers Europe + Australia)
   try {
@@ -200,7 +207,7 @@ async function findNsuids(gameUrl, emit) {
     emit(`EU catalog: ${nsuids.length} nsuid(s)`);
   } catch (e) { emit(`EU catalog error: ${e.message.slice(0, 60)}`); }
 
-  // 2. Japan catalog (separate nsuid for JP store)
+  // 2. Japan catalog — nsuid lives in the store URL or item.nsuid field
   try {
     const jpRes = await axios.get(
       `https://search.nintendo.co.jp/nintendo_soft/search.json?q=${q}&opt_hard=HAC&limit=10`,
@@ -208,39 +215,75 @@ async function findNsuids(gameUrl, emit) {
     );
     const before = nsuids.length;
     for (const item of (jpRes.data?.result?.items || [])) {
-      add(item.nsuid); add(item.icode);
-      for (const id of (item.nsuid_txt || [])) add(id);
+      add(item.nsuid);
+      // nsuid is also embedded in the store link URL
+      extractFromText(item.link_url || item.url || item.store_link || '');
+      extractFromText(JSON.stringify(item));
     }
     emit(`JP catalog: +${nsuids.length - before} nsuid(s)`);
   } catch (e) { emit(`JP catalog error: ${e.message.slice(0, 60)}`); }
 
-  // 3. Americas catalog via Nintendo of America / Algolia
-  try {
-    const algRes = await axios.post(
-      'https://u3b6gr4ua3-dsn.algolia.net/1/indexes/*/queries',
-      {
-        requests: [{
-          indexName: 'store_game_en_us_release_date',
-          params: `query=${q}&hitsPerPage=5`,
-        }],
-      },
-      {
-        headers: {
-          'X-Algolia-Application-Id': 'U3B6GR4UA3',
-          'X-Algolia-API-Key': '9a20c93440cf63cf1a7008d75f7438bf',
-          'Content-Type': 'application/json',
-        },
-        timeout: 10000,
+  // 3. Americas: Nintendo of America via Algolia (try multiple known index names)
+  const algoliaIndexes = [
+    'store_game_en_us_release_date',
+    'store_game_en_us',
+    'noa_aem_game_en_us',
+  ];
+  for (const indexName of algoliaIndexes) {
+    try {
+      const algRes = await axios.post(
+        'https://u3b6gr4ua3-dsn.algolia.net/1/indexes/*/queries',
+        { requests: [{ indexName, params: `query=${q}&hitsPerPage=5` }] },
+        {
+          headers: {
+            'X-Algolia-Application-Id': 'U3B6GR4UA3',
+            'X-Algolia-API-Key': '9a20c93440cf63cf1a7008d75f7438bf',
+            'Content-Type': 'application/json',
+          },
+          timeout: 10000,
+        }
+      );
+      const hits = algRes.data?.results?.[0]?.hits || [];
+      const before = nsuids.length;
+      for (const hit of hits) {
+        add(hit.nsuid);
+        for (const id of (hit.nsuid_txt || [])) add(id);
+        extractFromText(JSON.stringify(hit));
+        if (!gameName && hit.title) gameName = hit.title;
       }
-    );
-    const before = nsuids.length;
-    for (const hit of (algRes.data?.results?.[0]?.hits || [])) {
-      add(hit.nsuid);
-      for (const id of (hit.nsuid_txt || [])) add(id);
-      if (!gameName && hit.title) gameName = hit.title;
-    }
-    emit(`Americas catalog: +${nsuids.length - before} nsuid(s)`);
-  } catch (e) { emit(`Americas catalog error: ${e.message.slice(0, 60)}`); }
+      if (nsuids.length > before) {
+        emit(`Americas catalog (${indexName}): +${nsuids.length - before} nsuid(s)`);
+        break;
+      }
+    } catch (e) { emit(`Algolia ${indexName}: ${e.message.slice(0, 50)}`); }
+  }
+
+  // 4. Fallback: Nintendo.com US product page (no-JS HTTP fetch, nsuid in page HTML)
+  {
+    const nintendoSlug = gameUrl.split('/').pop().replace(/^\d+-/, '') + '-switch';
+    try {
+      const before = nsuids.length;
+      const pageRes = await axios.get(
+        `https://www.nintendo.com/en-US/store/products/${nintendoSlug}/`,
+        {
+          timeout: 10000,
+          headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
+        }
+      );
+      extractFromText(pageRes.data);
+      if (nsuids.length > before) emit(`Nintendo.com US page: +${nsuids.length - before} nsuid(s)`);
+    } catch { /* 404 or redirect — slug didn't match */ }
+  }
+
+  // 5. Fallback: eshop-prices.com JSON API (no Cloudflare on API endpoints)
+  if (gameId) {
+    try {
+      const before = nsuids.length;
+      const epRes = await axios.get(`https://eshop-prices.com/games/${gameId}.json`, { timeout: 8000 });
+      extractFromText(JSON.stringify(epRes.data));
+      if (nsuids.length > before) emit(`eshop-prices API: +${nsuids.length - before} nsuid(s)`);
+    } catch { /* not available */ }
+  }
 
   if (!nsuids.length) throw new Error('No nsuids found in any Nintendo catalog');
   if (!gameName) gameName = slug;
@@ -564,15 +607,18 @@ function startTelegramBot() {
   const ESHOP_URL_RE = /https?:\/\/eshop-prices\.com\/games\/[^\s]+/i;
 
   async function handleUrl(chatId, gameUrl, messageId) {
-    await bot.sendMessage(chatId,
+    const statusMsg = await bot.sendMessage(chatId,
       '🔍 Fetching prices\\.\\.\\. please wait\\.',
       { parse_mode: 'MarkdownV2', reply_to_message_id: messageId }
     );
+    const logs = [];
+    const emit = (msg) => { logs.push(msg); console.log('[bot]', msg); };
     try {
-      const data = await buildResults(gameUrl, () => {});
+      const data = await buildResults(gameUrl, emit);
       await bot.sendMessage(chatId, formatTelegramMessage(data), { parse_mode: 'MarkdownV2' });
     } catch (err) {
-      await bot.sendMessage(chatId, `❌ Error: ${err.message}`);
+      const logText = logs.length ? `\n\nDebug:\n${logs.slice(-8).join('\n')}` : '';
+      await bot.sendMessage(chatId, `❌ Error: ${err.message}${logText}`);
     }
   }
 

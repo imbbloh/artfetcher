@@ -274,6 +274,7 @@ async function findNsuids(gameUrl, emit) {
   const seen = new Set();
   const nsuids = [];
   let gameName = '';
+  const euNsuids = []; // nsuids confirmed from EU catalog (always for THIS game)
   const add = (id) => {
     const s = String(id || '');
     if (/^7001\d{10}$/.test(s) && !seen.has(s)) { seen.add(s); nsuids.push(s); }
@@ -298,7 +299,7 @@ async function findNsuids(gameUrl, emit) {
         if (scored.length && scored[0].d.title) gameName = scored[0].d.title;
         const before = nsuids.length;
         for (const { d } of scored.slice(0, 5))
-          for (const id of (d.nsuid_txt || [])) add(id);
+          for (const id of (d.nsuid_txt || [])) { add(id); euNsuids.push(id); }
         emit(`EU catalog: +${nsuids.length - before} nsuid(s)`);
       } catch (e) { emit(`EU catalog error: ${e.message.slice(0, 60)}`); }
     })(),
@@ -310,8 +311,11 @@ async function findNsuids(gameUrl, emit) {
   // gameName is now set by EU catalog; nameSlug is used for product page lookups.
 
   const nameSlug = toNintendoSlug(gameName || slug);
-  // Try both slug variants without repeating the same URL
-  const slugVariants = [...new Set([nameSlug + '-switch', rawSlug + '-switch'])];
+  // Try multiple slug variants — some games use -switch suffix, others don't
+  const slugVariants = [...new Set([
+    nameSlug + '-switch', rawSlug + '-switch',
+    nameSlug, rawSlug,
+  ])];
 
   await Promise.allSettled([
 
@@ -356,15 +360,14 @@ async function findNsuids(gameUrl, emit) {
       }
     })() : Promise.resolve(),
 
-    // ec.nintendo.com catalog search for JP/HK/SG — try multiple URL patterns.
-    // These pages are Next.js apps that embed data in __NEXT_DATA__ JSON which
-    // contains nsuids in the standard 7001XXXXXXXXXX format.
-    ...['HK/zh', 'SG/en', 'JP/ja'].flatMap(ccLang => {
-      const cc = ccLang.split('/')[0];
+    // api.ec.nintendo.com catalog search for JP/HK/SG — same domain as the working price API.
+    // The eShop apps likely call v1/titles or v1/search for catalog browsing.
+    ...['JP', 'HK', 'SG'].flatMap(cc => {
+      const lang = cc === 'JP' ? 'ja' : cc === 'HK' ? 'zh' : 'en';
       return [
-        fetchNsuidsFromUrl(`https://ec.nintendo.com/${ccLang}/titles?q=${q}`, `ec.nintendo.com ${cc} titles?q`, emit).then(addMany),
-        fetchNsuidsFromUrl(`https://ec.nintendo.com/${ccLang}/titles?search=${q}`, `ec.nintendo.com ${cc} titles?search`, emit).then(addMany),
-        fetchNsuidsFromUrl(`https://ec.nintendo.com/${ccLang}/titles/search?official_title=${q}`, `ec.nintendo.com ${cc} titles/search`, emit).then(addMany),
+        fetchNsuidsFromUrl(`https://api.ec.nintendo.com/v1/titles?country=${cc}&lang=${lang}&q=${q}&limit=10`, `api.ec ${cc} v1/titles`, emit).then(addMany),
+        fetchNsuidsFromUrl(`https://api.ec.nintendo.com/v1/search?country=${cc}&lang=${lang}&q=${q}&limit=10`, `api.ec ${cc} v1/search`, emit).then(addMany),
+        fetchNsuidsFromUrl(`https://api.ec.nintendo.com/v1/catalog?country=${cc}&lang=${lang}&q=${q}&limit=10`, `api.ec ${cc} v1/catalog`, emit).then(addMany),
       ];
     }),
 
@@ -397,11 +400,13 @@ async function findNsuids(gameUrl, emit) {
     return false; // always attempt probe; verification makes it safe
   });
 
-  const sortedByValue = [...nsuids].sort((a, b) => (BigInt(a) > BigInt(b) ? 1 : -1));
+  // Probe around EU catalog nsuids (confirmed for this game) rather than arbitrary sorted nsuids.
+  // Limit to ±5 — if JP nsuid is further away, the catalog search (Phase 2) must find it instead.
+  const probeBaseIds = euNsuids.length ? euNsuids : [];
   const probeSet = new Set();
-  for (const base of sortedByValue.slice(0, 3)) {
+  for (const base of probeBaseIds.slice(0, 3)) {
     const b = BigInt(base);
-    for (let d = 1; d <= 3; d++) {
+    for (let d = 1; d <= 5; d++) {
       for (const p of [String(b + BigInt(d)), String(b - BigInt(d))]) {
         if (/^7001\d{10}$/.test(p) && !seen.has(p)) probeSet.add(p);
       }

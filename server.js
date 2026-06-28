@@ -275,6 +275,7 @@ async function findNsuids(gameUrl, emit) {
   const nsuids = [];
   let gameName = '';
   const euNsuids = []; // nsuids confirmed from EU catalog (always for THIS game)
+  let usNsuid = null;  // US/Americas nsuid from Algolia (used as JP probe base)
   const add = (id) => {
     const s = String(id || '');
     if (/^7001\d{10}$/.test(s) && !seen.has(s)) { seen.add(s); nsuids.push(s); }
@@ -348,6 +349,7 @@ async function findNsuids(gameUrl, emit) {
           const hits = algRes.data?.results?.[0]?.hits || [];
           const before = nsuids.length;
           for (const hit of hits) {
+            if (!usNsuid && hit.nsuid && /^7001\d{10}$/.test(String(hit.nsuid))) usNsuid = String(hit.nsuid);
             add(hit.nsuid); addMany(hit.nsuid_txt || []); extractFromText(JSON.stringify(hit));
             if (!gameName && hit.title) gameName = hit.title;
           }
@@ -383,126 +385,126 @@ async function findNsuids(gameUrl, emit) {
 
   ]);
 
-  // ── Phase 3: Regional nsuid probe around EU catalog nsuids ───────────────────
-  // Probe ±500 around EU catalog nsuids for JP/HK/SG. Accept the candidate per region
-  // with the smallest numeric gap to ANY probe-base nsuid (language-agnostic).
+  // ── Phase 3: Regional nsuid probe ────────────────────────────────────────────
+  // JP: probe ±5 around the US nsuid (JP is almost always US±1–3, e.g. Dave JP=US−1,
+  //     Zelda JP=US+1). Tight window → very few candidates → low false-positive risk.
+  // HK: probe ±50 around the primary EU nsuid (HK gap from EU is ±3–50 for most games).
+  // SG: nsuids are 50,000+ away from EU/US — no probe can reach them; skip.
   //
-  // Key constraint: only probe around EU nsuids in the SAME numeric range as the smallest
-  // EU nsuid. The EU catalog can return nsuids from multiple editions in different ranges
-  // (e.g. Dave the Diver: 060373 and 111453). Probing around 111453 finds a different
-  // game's JP nsuid at gap 1, beating the correct 060371 at gap 2 from 060373.
-  // Filtering to the primary range prevents this cross-range false positive.
-  const MAX_GAP = 50n;
-  const SAME_RANGE = 10000n; // EU nsuids within this distance of the smallest are "primary"
-  // Keywords for title-tag verification (language-agnostic: numbers + short proper nouns)
+  // Only probe around EU nsuids in the SAME numeric range as the smallest (primary range).
+  // The EU catalog can return nsuids from multiple editions (e.g. Dave: 060373 AND 111453).
+
+  const SAME_RANGE = 10000n;
+  const JP_GAP = 5n;   // JP is almost always within ±5 of US nsuid
+  const HK_GAP = 50n;  // HK is usually within ±50 of EU nsuid
+
   const probeKeywords = (gameName || slug).toLowerCase()
     .split(/[\s\-:™®©,.'!?]+/)
     .filter(w => w.length >= 3 || /^\d{3,}$/.test(w));
 
   const euSorted = [...euNsuids].sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1));
   const primaryEu = euSorted.length ? BigInt(euSorted[0]) : null;
-  const probeBaseIds = primaryEu
+  const euPrimaryIds = primaryEu
     ? euNsuids.filter(id => { const d = BigInt(id) - primaryEu; return (d < 0n ? -d : d) <= SAME_RANGE; })
     : [];
-  const euBigInts = probeBaseIds.map(id => BigInt(id));
-  emit(`Probe: euNsuids=[${euNsuids.join(',')}] probeBase=[${probeBaseIds.join(',')}]`);
+  const euBigInts = euPrimaryIds.map(id => BigInt(id));
+  emit(`Probe: usNsuid=${usNsuid} euNsuids=[${euNsuids.join(',')}] euPrimary=[${euPrimaryIds.join(',')}]`);
 
-  if (probeBaseIds.length) {
-    const probeSet = new Set();
-    for (const base of probeBaseIds) {
-      const b = BigInt(base);
-      for (let d = 1n; d <= MAX_GAP; d++) {
-        for (const p of [String(b + d), String(b - d)]) {
-          if (/^7001\d{10}$/.test(p) && !seen.has(p)) probeSet.add(p);
+  // Build probe ID set for each region separately
+  function buildProbeSet(bases, gap) {
+    const s = new Set();
+    for (const b of bases) {
+      const bn = BigInt(b);
+      for (let d = 1n; d <= gap; d++) {
+        for (const p of [String(bn + d), String(bn - d)]) {
+          if (/^7001\d{10}$/.test(p) && !seen.has(p)) s.add(p);
         }
       }
     }
+    return [...s];
+  }
 
-    const probeIds = [...probeSet];
+  // Query price API in chunks of 50, throttling 3 concurrent chunks at a time
+  async function probeRegion(cc, lang, probeIds, baseBigInts, maxGap) {
+    if (!probeIds.length) { emit(`${cc} probe: skipped (no probe base)`); return; }
     const CHUNK = 50;
     const chunks = [];
     for (let i = 0; i < probeIds.length; i += CHUNK) chunks.push(probeIds.slice(i, i + CHUNK));
 
-    const REGIONS = [
-      { cc: 'JP', lang: 'ja' },
-      { cc: 'HK', lang: 'zh' },
-      { cc: 'SG', lang: 'en' },
-    ];
-
-    // Throttle: run 3 chunks at a time per region to avoid hammering the price API
-    // (all-parallel caused rate limiting that broke the subsequent main price query)
-    async function chunkedFetch(cc, lang) {
-      const results = [];
-      for (let i = 0; i < chunks.length; i += 3) {
-        const batch = chunks.slice(i, i + 3);
-        const batchResults = await Promise.allSettled(batch.map(chunk =>
-          axios.get(
-            `https://api.ec.nintendo.com/v1/price?country=${cc}&lang=${lang}&ids=${chunk.join(',')}`,
-            { timeout: 10000 }
-          )
-        ));
-        results.push(...batchResults);
-      }
-      return results;
+    const chunkResults = [];
+    for (let i = 0; i < chunks.length; i += 3) {
+      const batch = chunks.slice(i, i + 3);
+      const batchRes = await Promise.allSettled(batch.map(chunk =>
+        axios.get(
+          `https://api.ec.nintendo.com/v1/price?country=${cc}&lang=${lang}&ids=${chunk.join(',')}`,
+          { timeout: 10000 }
+        )
+      ));
+      chunkResults.push(...batchRes);
     }
 
-    await Promise.allSettled(REGIONS.map(async ({ cc, lang }) => {
-      const chunkResults = await chunkedFetch(cc, lang);
-      const allCandidates = [];
-      for (const r of chunkResults) {
-        if (r.status !== 'fulfilled') continue;
-        for (const p of (r.value.data?.prices || [])) {
-          if (p.sales_status !== 'not_found' && (p.regular_price || p.discount_price) && !seen.has(String(p.title_id))) {
-            allCandidates.push(String(p.title_id));
-          }
+    const allCandidates = [];
+    for (const r of chunkResults) {
+      if (r.status !== 'fulfilled') continue;
+      for (const p of (r.value.data?.prices || [])) {
+        if (p.sales_status !== 'not_found' && (p.regular_price || p.discount_price) && !seen.has(String(p.title_id))) {
+          allCandidates.push(String(p.title_id));
         }
       }
-      emit(`${cc} probe: ${allCandidates.length} price candidates found`);
-      if (!allCandidates.length) return;
-      // Rank candidates by gap to nearest EU probe base, take top 10 for verification
-      const ranked = allCandidates
-        .map(id => ({ id, gap: euBigInts.reduce((min, eu) => { const d = eu > BigInt(id) ? eu - BigInt(id) : BigInt(id) - eu; return d < min ? d : min; }, MAX_GAP + 1n) }))
-        .filter(x => x.gap <= MAX_GAP)
-        .sort((a, b) => (a.gap < b.gap ? -1 : a.gap > b.gap ? 1 : 0))
-        .slice(0, 10);
-      emit(`${cc} probe: ranked=[${ranked.map(r => `${r.id}(gap${r.gap})`).join(',')}] kws=[${probeKeywords.join(',')}]`);
+    }
+    emit(`${cc} probe: ${allCandidates.length} price candidates`);
+    if (!allCandidates.length) return;
 
-      // Verify each candidate via page <title> tag in parallel (language-agnostic:
-      // most non-Japanese games keep English title on JP/HK pages; numbers like "2077"
-      // appear the same in any language).
-      const ecPath = cc === 'HK' ? 'HK/zh' : cc === 'JP' ? 'JP/ja' : `SG//`;
-      const verified = await Promise.allSettled(ranked.map(async ({ id, gap }) => {
-        try {
-          const pageRes = await axios.get(`https://ec.nintendo.com/${ecPath}/titles/${id}`, {
-            timeout: 8000,
-            headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': `${lang},en;q=0.8` },
-          });
-          const titleTag = (String(pageRes.data).match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '').toLowerCase();
-          const kwMatch = probeKeywords.some(kw => titleTag.includes(kw));
-          emit(`${cc} verify ${id}: title="${titleTag.slice(0,60)}" kwMatch=${kwMatch}`);
-          return { id, gap, kwMatch };
-        } catch (e) {
-          emit(`${cc} verify ${id}: error ${e.message.slice(0,40)}`);
-          return { id, gap, kwMatch: false };
-        }
-      }));
+    const ranked = allCandidates
+      .map(id => ({ id, gap: baseBigInts.reduce((min, b) => { const d = b > BigInt(id) ? b - BigInt(id) : BigInt(id) - b; return d < min ? d : min; }, maxGap + 1n) }))
+      .filter(x => x.gap <= maxGap)
+      .sort((a, b) => (a.gap < b.gap ? -1 : a.gap > b.gap ? 1 : 0))
+      .slice(0, 10);
+    emit(`${cc} probe: ranked=[${ranked.map(r => `${r.id}(gap${r.gap})`).join(',')}] kws=[${probeKeywords.join(',')}]`);
 
-      // Priority: (1) title-verified + smallest gap, (2) unverified but UNIQUE candidate
-      // at gap ≤ 3 (fallback for pure-Japanese game names).
-      // Don't use proximity when multiple candidates compete — require verification to
-      // disambiguate, otherwise we'd pick the numerically-closest wrong game.
-      const verifiedHits = verified.filter(r => r.status === 'fulfilled' && r.value.kwMatch).map(r => r.value);
-      const closeUnverified = verified.filter(r => r.status === 'fulfilled' && !r.value.kwMatch && r.value.gap <= 3n).map(r => r.value);
-      const proximityOnly = closeUnverified.length === 1 ? closeUnverified : [];
-      const best = [...verifiedHits, ...proximityOnly].sort((a, b) => (a.gap < b.gap ? -1 : a.gap > b.gap ? 1 : 0))[0];
-      if (best) {
-        add(best.id);
-        emit(`${cc} probe: accepted nsuid ${best.id} (gap ${best.gap}, verified=${best.kwMatch})`);
-      } else {
-        emit(`${cc} probe: no nsuid accepted (verifiedHits=${verifiedHits.length}, closeUnverified=${closeUnverified.length})`);
+    const ecPath = cc === 'HK' ? 'HK/zh' : cc === 'JP' ? 'JP/ja' : 'SG//';
+    const verified = await Promise.allSettled(ranked.map(async ({ id, gap }) => {
+      try {
+        const pageRes = await axios.get(`https://ec.nintendo.com/${ecPath}/titles/${id}`, {
+          timeout: 8000,
+          headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': `${lang},en;q=0.8` },
+        });
+        const titleTag = (String(pageRes.data).match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '').toLowerCase();
+        const kwMatch = probeKeywords.some(kw => titleTag.includes(kw));
+        emit(`${cc} verify ${id}: title="${titleTag.slice(0, 60)}" kwMatch=${kwMatch}`);
+        return { id, gap, kwMatch };
+      } catch (e) {
+        emit(`${cc} verify ${id}: error ${e.message.slice(0, 40)}`);
+        return { id, gap, kwMatch: false };
       }
     }));
+
+    const verifiedHits = verified.filter(r => r.status === 'fulfilled' && r.value.kwMatch).map(r => r.value);
+    // Proximity fallback only when there is exactly ONE unverified candidate (avoids picking
+    // the wrong game when multiple near-gap competitors all fail title verification).
+    const closeUnverified = verified.filter(r => r.status === 'fulfilled' && !r.value.kwMatch && r.value.gap <= 3n).map(r => r.value);
+    const proximityOnly = closeUnverified.length === 1 ? closeUnverified : [];
+    const best = [...verifiedHits, ...proximityOnly].sort((a, b) => (a.gap < b.gap ? -1 : a.gap > b.gap ? 1 : 0))[0];
+    if (best) {
+      add(best.id);
+      emit(`${cc} probe: accepted ${best.id} (gap ${best.gap}, verified=${best.kwMatch})`);
+    } else {
+      emit(`${cc} probe: no nsuid accepted (verified=${verifiedHits.length}, closeUnverified=${closeUnverified.length})`);
+    }
   }
+
+  // JP: tight probe around US nsuid
+  const jpBase = usNsuid ? [usNsuid] : euPrimaryIds;
+  const jpBigInts = jpBase.map(id => BigInt(id));
+  const jpProbeIds = buildProbeSet(jpBase, JP_GAP);
+
+  // HK: probe around EU primary nsuids
+  const hkProbeIds = buildProbeSet(euPrimaryIds, HK_GAP);
+
+  await Promise.allSettled([
+    probeRegion('JP', 'ja', jpProbeIds, jpBigInts, JP_GAP),
+    probeRegion('HK', 'zh', hkProbeIds, euBigInts, HK_GAP),
+  ]);
 
   if (!nsuids.length) throw new Error('No nsuids found in any Nintendo catalog');
   if (!gameName) gameName = slug;

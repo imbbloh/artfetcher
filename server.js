@@ -223,14 +223,26 @@ async function findNsuidsPhase1(gameUrl, emit) {
   ]);
 
   const nameSlug = toNintendoSlug(gameName || slug);
-  const slugVariants = [...new Set([nameSlug + '-switch', rawSlug + '-switch', nameSlug, rawSlug])];
+  // originalSlug: for nintendo.com inputs, the full slug before stripping (e.g. subnautica-nintendo-switch-2-edition-switch-2)
+  const nintendoMatch = gameUrl.match(/nintendo\.com\/[a-z]{2}\/store\/products\/([^/?#]+)/i);
+  const originalSlug = nintendoMatch ? nintendoMatch[1] : null;
+  const slugVariants = [...new Set([
+    nameSlug + '-switch', rawSlug + '-switch', nameSlug, rawSlug,
+    ...(originalSlug ? [originalSlug] : []),
+  ])];
   const titleWords = (gameName || slug).toLowerCase().split(/\W+/).filter(w => w.length > 2);
 
   await Promise.allSettled([
-    // Nintendo.com product pages → US/Americas nsuid
-    ...slugVariants.map(s =>
-      fetchNsuidsFrom(`https://www.nintendo.com/store/products/${s}/`, `Nintendo.com (${s})`, emit).then(addMany)
-    ),
+    // If input was a nintendo.com URL, fetch it directly first (contains nsuid in HTML)
+    originalSlug
+      ? fetchNsuidsFrom(gameUrl, 'Nintendo.com (direct)', emit).then(addMany)
+      : Promise.resolve(),
+
+    // Nintendo.com product pages (no-region and /us/ variants) → US/Americas nsuid
+    ...slugVariants.flatMap(s => [
+      fetchNsuidsFrom(`https://www.nintendo.com/store/products/${s}/`, `Nintendo.com (${s})`, emit).then(addMany),
+      fetchNsuidsFrom(`https://www.nintendo.com/us/store/products/${s}/`, `Nintendo.com US (${s})`, emit).then(addMany),
+    ]),
 
     // Algolia → verified US nsuid
     algoliaKey ? (async () => {

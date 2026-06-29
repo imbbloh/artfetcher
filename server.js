@@ -107,6 +107,27 @@ function findChromiumExecutable() {
   for (const p of known) { try { if (fs.existsSync(p)) return p; } catch {} }
 }
 
+// Returns the minimum total CNY cost to cover `amount` using available denominations.
+// Uses DP (coin-change variant) to find cheapest combination of gift cards.
+function minGiftCardCNY(amount, currency) {
+  const denomPriceMap = gcPrices[currency];
+  if (!denomPriceMap) return null;
+  const denoms = Object.entries(denomPriceMap)
+    .map(([d, cny]) => ({ denom: Number(d), cny }))
+    .filter(d => d.cny != null && d.denom > 0);
+  if (!denoms.length) return null;
+
+  const target = Math.round(amount);
+  const dp = new Array(target + 1).fill(Infinity);
+  dp[0] = 0;
+  for (let i = 1; i <= target; i++)
+    for (const { denom, cny } of denoms)
+      if (denom <= i && dp[i - denom] + cny < dp[i])
+        dp[i] = dp[i - denom] + cny;
+
+  return dp[target] === Infinity ? null : Math.round(dp[target] * 100) / 100;
+}
+
 function minGiftCardAmount(price, denoms) {
   if (!denoms || !denoms.length) return price;
   const target = Math.ceil(price);
@@ -469,8 +490,7 @@ function buildResultData(gameName, prices, rateResult) {
     if (currency === 'SGD') {
       sgdPrice = effectiveAmount;
     } else if (GC_CURRENCIES.includes(currency) && effectiveAmount != null && cnyToSgd != null) {
-      const denomKey = Number.isInteger(effectiveAmount) ? String(effectiveAmount) : effectiveAmount.toFixed(2);
-      const cny = gcPrices[currency]?.[denomKey] ?? null;
+      const cny = minGiftCardCNY(effectiveAmount, currency);
       if (cny != null) {
         gcCnyPrice = cny;
         sgdPrice = cny * cnyToSgd;

@@ -277,6 +277,16 @@ async function findNsuidsPhase1(gameUrl, emit) {
   ]);
 
   if (!gameName) gameName = slug;
+
+  // For Switch 2 games, Algolia/EU catalog return 7005 (platform catalog) nsuids.
+  // The direct nintendo.com fetch finds the real 7001 (eShop price API) nsuid.
+  // Prefer any 7001 nsuid as usNsuid so JP probing stays in the correct nsuid space.
+  const amer7001 = nsuids.filter(id => id.startsWith('7001'));
+  if (amer7001.length && (!usNsuid || !usNsuid.startsWith('7001'))) {
+    usNsuid = amer7001[0];
+    emit(`usNsuid: overriding with 7001 nsuid ${usNsuid}`);
+  }
+
   emit(`Phase 1 done: "${gameName}", ${nsuids.length} nsuids found`);
   return { nsuids, seen, gameName, euNsuids, usNsuid };
 }
@@ -555,9 +565,12 @@ function startTelegramBot() {
       const data = await buildResults(gameUrl, emit, onPartial);
       const finalText = formatTelegramMessage(data);
       if (partialMsgId) {
-        await bot.editMessageText(finalText, { chat_id: chatId, message_id: partialMsgId, parse_mode: 'MarkdownV2', disable_web_page_preview: true }).catch(() =>
-          bot.sendMessage(chatId, finalText, { parse_mode: 'MarkdownV2', disable_web_page_preview: true })
-        );
+        await bot.editMessageText(finalText, { chat_id: chatId, message_id: partialMsgId, parse_mode: 'MarkdownV2', disable_web_page_preview: true }).catch(err => {
+          // "message is not modified" means content unchanged (Phase 2 found nothing new) — no action needed
+          if (!String(err.message).includes('message is not modified')) {
+            return bot.sendMessage(chatId, finalText, { parse_mode: 'MarkdownV2', disable_web_page_preview: true });
+          }
+        });
       } else {
         await bot.sendMessage(chatId, finalText, { parse_mode: 'MarkdownV2', disable_web_page_preview: true });
       }

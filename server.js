@@ -48,11 +48,11 @@ const GC_CURRENCIES = ['USD', 'BRL', 'CAD', 'MXN', 'AUD'];
 const GC_PRICES_FILE = path.join(__dirname, 'data', 'giftcard-prices.json');
 
 let gcPrices = {
-  USD: { '5': null, '10': null },
-  BRL: { '30': null, '50': null },
-  CAD: { '10': null, '20': null, '25': null },
-  MXN: { '100': null, '200': null, '350': null },
-  AUD: { '15': null },
+  USD: { '5': 30.5, '10': 59 },
+  BRL: { '30': 40.9, '50': 59 },
+  CAD: { '10': 49, '25': 124 },
+  MXN: { '100': 34, '350': 119 },
+  AUD: { '15': 77.5 },
 };
 
 function loadGcPrices() {
@@ -60,10 +60,10 @@ function loadGcPrices() {
     const fs = require('fs');
     if (fs.existsSync(GC_PRICES_FILE)) {
       const saved = JSON.parse(fs.readFileSync(GC_PRICES_FILE, 'utf8'));
+      // Fully replace gcPrices from file — avoids stale hardcoded denominations
       for (const [cur, denoms] of Object.entries(saved))
         if (cur in gcPrices && denoms && typeof denoms === 'object')
-          for (const [d, v] of Object.entries(denoms))
-            if (d in gcPrices[cur] && (typeof v === 'number' || v === null)) gcPrices[cur][d] = v;
+          gcPrices[cur] = Object.fromEntries(Object.entries(denoms).filter(([, v]) => typeof v === 'number' && v > 0));
     }
   } catch {}
 }
@@ -80,6 +80,7 @@ loadGcPrices();
 console.log('Gift card prices loaded:', JSON.stringify(gcPrices));
 
 const cache = new Map();
+let browserBusy = false; // only one Chromium at a time (Render 512MB RAM limit)
 const CACHE_TTL = 4 * 60 * 60 * 1000;
 
 let rateCache = null;
@@ -234,6 +235,8 @@ async function fetchNsuidsFromEshopPricesBrowser(gameUrl, emit) {
 // so we scrape the page itself for both the title and all regional ec.nintendo.com links.
 async function fetchNsuidsFromDekuDealsBrowser(gameUrl, emit) {
   if (!gameUrl.includes('dekudeals.com')) return { regionMap: {}, title: '' };
+  if (browserBusy) { emit('DekuDeals browser: skipped (another browser already running)'); return { regionMap: {}, title: '' }; }
+  browserBusy = true;
   emit('DekuDeals browser: loading page...');
   let browser;
   try {
@@ -261,7 +264,7 @@ async function fetchNsuidsFromDekuDealsBrowser(gameUrl, emit) {
     emit(`DekuDeals browser: title="${title}", found ${regions.length} regional nsuids [${regions.map(c => `${c}:${regionMap[c]}`).join(', ')}]`);
     return { regionMap, title };
   } catch (e) { emit(`DekuDeals browser: ${e.message.slice(0, 70)}`); return { regionMap: {}, title: '' }; }
-  finally { if (browser) await browser.close().catch(() => {}); }
+  finally { if (browser) await browser.close().catch(() => {}); browserBusy = false; }
 }
 
 // ─── URL helpers ─────────────────────────────────────────────────────────────

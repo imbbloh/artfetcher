@@ -299,13 +299,13 @@
       <input
         type="url"
         id="url-input"
-        placeholder="https://eshop-prices.com/games/17496-cyberpunk-2077-ultimate-edition"
+        placeholder="https://eshop-prices.com/games/378-… or https://www.nintendo.com/us/store/products/…"
         autocomplete="off"
         spellcheck="false"
       />
       <button id="fetch-btn" onclick="fetchPrices()">Fetch Prices</button>
     </div>
-    <p class="hint">Paste any eshop-prices.com game link above</p>
+    <p class="hint">Paste an eshop-prices.com, dekudeals.com, or nintendo.com/store game link</p>
 
     <div id="error-box" class="error-box"></div>
 
@@ -469,8 +469,8 @@
     async function fetchPrices() {
       const url = document.getElementById('url-input').value.trim();
       if (!url) { showError('Please enter a URL.'); return; }
-      if (!url.includes('eshop-prices.com')) {
-        showError('Please enter an eshop-prices.com URL.');
+      if (!url.includes('eshop-prices.com') && !url.includes('dekudeals.com') && !url.includes('nintendo.com')) {
+        showError('Please enter an eshop-prices.com, dekudeals.com, or nintendo.com store URL.');
         return;
       }
 

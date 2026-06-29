@@ -168,10 +168,25 @@ async function fetchNsuidsFromEshopPricesBrowser(gameUrl, emit) {
   finally { if (browser) await browser.close().catch(() => {}); }
 }
 
+// ─── URL helpers ─────────────────────────────────────────────────────────────
+
+const SUPPORTED_URL = /eshop-prices\.com\/games\/|dekudeals\.com\/items\/|(?:www\.)?nintendo\.com\/[a-z]{2}\/store\/products\//i;
+
+function extractSlugFromUrl(gameUrl) {
+  // nintendo.com/us/store/products/{slug}/ → strip trailing -switch/-nintendo-switch
+  const nintendoMatch = gameUrl.match(/nintendo\.com\/[a-z]{2}\/store\/products\/([^/?#]+)/i);
+  if (nintendoMatch) {
+    return nintendoMatch[1].replace(/-(nintendo-)?switch$/, '');
+  }
+  // eshop-prices: /games/123-some-slug  → strip numeric prefix
+  // dekudeals: /items/some-slug
+  return gameUrl.split('/').pop().split('?')[0].replace(/^\d+-/, '');
+}
+
 // ─── Phase 1: fast nsuid discovery (EU catalog + Algolia + nintendo.com page) ─
 
 async function findNsuidsPhase1(gameUrl, emit) {
-  const rawSlug = gameUrl.split('/').pop().replace(/^\d+-/, '');
+  const rawSlug = extractSlugFromUrl(gameUrl);
   const slug = rawSlug.replace(/-/g, ' ');
   const gameId = gameUrl.match(/\/games\/(\d+)/)?.[1];
   const q = encodeURIComponent(slug);
@@ -439,8 +454,8 @@ async function buildResults(gameUrl, emit, onPartial) {
 
 app.get('/api/fetch', async (req, res) => {
   const { url } = req.query;
-  if (!url || !/eshop-prices\.com\/games\/|dekudeals\.com\/items\//.test(url)) {
-    return res.status(400).json({ error: 'Please provide a valid eshop-prices.com or dekudeals.com URL' });
+  if (!url || !SUPPORTED_URL.test(url)) {
+    return res.status(400).json({ error: 'Please provide a valid eshop-prices.com, dekudeals.com, or nintendo.com/store URL' });
   }
 
   res.setHeader('Content-Type', 'text/event-stream');
@@ -505,7 +520,7 @@ function startTelegramBot() {
 
   const bot = new TelegramBot(token, { polling: { interval: 2000, autoStart: true, params: { timeout: 10 } } });
   console.log('  Telegram bot active.');
-  const ESHOP_URL_RE = /https?:\/\/(?:eshop-prices\.com\/games\/|(?:www\.)?dekudeals\.com\/items\/)[^\s]+/i;
+  const ESHOP_URL_RE = /https?:\/\/(?:eshop-prices\.com\/games\/|(?:www\.)?dekudeals\.com\/items\/|(?:www\.)?nintendo\.com\/[a-z]{2}\/store\/products\/)[^\s]+/i;
 
   async function handleUrl(chatId, gameUrl, messageId) {
     const statusMsg = await bot.sendMessage(chatId, '🔍 Searching prices\\.\\.\\. please wait\\.', { parse_mode: 'MarkdownV2', reply_to_message_id: messageId });
@@ -547,7 +562,7 @@ function startTelegramBot() {
     } else if (/^\/start|\/help/.test(text)) {
       await bot.sendMessage(chatId,
         '👋 Send me a game link and I\'ll show you the best prices in SGD\\.\n\n' +
-        '*Supported:*\n• eshop\\-prices\\.com/games/\\.\\.\\.\n• dekudeals\\.com/items/\\.\\.\\.\n\n' +
+        '*Supported:*\n• eshop\\-prices\\.com/games/\\.\\.\\.\n• dekudeals\\.com/items/\\.\\.\\.\n• nintendo\\.com/\\*/store/products/\\.\\.\\.\n\n' +
         '*Example:*\n`https://eshop\\-prices\\.com/games/17496\\-cyberpunk\\-2077\\-ultimate\\-edition`',
         { parse_mode: 'MarkdownV2' }
       );

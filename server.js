@@ -180,12 +180,12 @@ function formatNintendoPrice(amount, currency) {
   return `${prefix}${value}`;
 }
 
-// Use Playwright to load an eshop-prices.com game page and pull every 7001-prefixed nsuid
-// from the rendered HTML (eShop buy-links like ec.nintendo.com/.../titles/7001XXXXXXXXXX).
-// Runs in its own browser instance so it doesn't block the main scrape pipeline.
+// Use Playwright to load an eshop-prices.com game page and intercept Nintendo API calls
+// made by the page (api.ec.nintendo.com/v1/price?country=XX&ids=NSUID,...).
+// This captures all regional nsuids including SG/HK/JP in one shot.
 async function fetchNsuidsFromEshopPricesBrowser(gameUrl, emit) {
   if (!gameUrl.includes('eshop-prices.com')) return [];
-  emit('Launching browser to extract nsuids from eshop-prices.com...');
+  emit('Launching browser to capture nsuids from eshop-prices.com...');
   let browser;
   try {
     browser = await chromium.launch({
@@ -195,6 +195,29 @@ async function fetchNsuidsFromEshopPricesBrowser(gameUrl, emit) {
     });
     const page = await browser.newPage();
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
+
+    // Intercept Nintendo price API calls — the page fetches prices per country,
+    // each request includes the correct regional nsuid in the ids= param.
+    const interceptedNsuids = new Set();
+    page.on('request', req => {
+      const url = req.url();
+      if (url.includes('api.ec.nintendo.com/v1/price')) {
+        const m = url.match(/[?&]ids=([^&]+)/);
+        if (m) m[1].split(',').forEach(id => { if (/^7001\d{10}$/.test(id)) interceptedNsuids.add(id); });
+      }
+    });
+    // Also capture nsuids from XHR/fetch responses (JSON bodies)
+    page.on('response', async resp => {
+      try {
+        const url = resp.url();
+        if (!url.includes('eshop-prices.com') && !url.includes('nintendo.com')) return;
+        const ct = resp.headers()['content-type'] || '';
+        if (!ct.includes('json')) return;
+        const text = await resp.text().catch(() => '');
+        (text.match(/7001\d{10}/g) || []).forEach(id => interceptedNsuids.add(id));
+      } catch {}
+    });
+
     await page.goto(gameUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
 
     // Wait for Cloudflare challenge to clear
@@ -207,13 +230,15 @@ async function fetchNsuidsFromEshopPricesBrowser(gameUrl, emit) {
       ).catch(() => {});
     }
 
-    // Let the page JS finish rendering price sections
-    await page.waitForTimeout(2000);
+    // Wait for the page to trigger its Nintendo API price calls
+    await page.waitForTimeout(5000);
 
-    // Grab full page HTML and extract all 7001-prefixed nsuids
+    // Also scan rendered HTML for any 7001 nsuids in links/data attributes
     const html = await page.content();
-    const found = [...new Set((html.match(/7001\d{10}/g) || []))];
-    emit(`eshop-prices browser: ${found.length} nsuid(s) found`);
+    (html.match(/7001\d{10}/g) || []).forEach(id => interceptedNsuids.add(id));
+
+    const found = [...interceptedNsuids];
+    emit(`eshop-prices browser: ${found.length} nsuid(s) captured`);
     return found;
   } catch (e) {
     emit(`eshop-prices browser: ${e.message.slice(0, 70)}`);
@@ -391,12 +416,22 @@ async function findNsuids(gameUrl, emit) {
           );
           const hits = algRes.data?.results?.[0]?.hits || [];
           const before = nsuids.length;
+          // Pick usNsuid from the hit whose title best matches our game name.
+          // Don't just take [0] — Algolia may rank a bundle/edition above the base game.
+          const titleWords = (gameName || slug).toLowerCase().split(/\W+/).filter(w => w.length > 2);
+          let bestHit = null, bestScore = -1;
           for (const hit of hits) {
-            if (!usNsuid && hit.nsuid && /^7001\d{10}$/.test(String(hit.nsuid))) usNsuid = String(hit.nsuid);
+            if (!hit.nsuid || !/^7001\d{10}$/.test(String(hit.nsuid))) continue;
+            const ht = (hit.title || '').toLowerCase();
+            const score = titleWords.filter(w => ht.includes(w)).length;
+            if (score > bestScore) { bestScore = score; bestHit = hit; }
+          }
+          if (bestHit && !usNsuid) usNsuid = String(bestHit.nsuid);
+          for (const hit of hits) {
             add(hit.nsuid); addMany(hit.nsuid_txt || []); extractFromText(JSON.stringify(hit));
             if (!gameName && hit.title) gameName = hit.title;
           }
-          emit(`Algolia ${indexName}: ${hits.length} hits, +${nsuids.length - before} new nsuids`);
+          emit(`Algolia ${indexName}: ${hits.length} hits, +${nsuids.length - before} new nsuids, usNsuid=${usNsuid}`);
           if (nsuids.length > before) break;
         } catch (e) {
           emit(`Algolia ${indexName}: ${e.message.slice(0, 50)}`);
@@ -446,7 +481,7 @@ async function findNsuids(gameUrl, emit) {
   // The EU catalog can return nsuids from multiple editions (e.g. Dave: 060373 AND 111453).
 
   const SAME_RANGE = 10000n;
-  const JP_GAP = 5n;   // JP is almost always within ±5 of US nsuid
+  const JP_GAP = 10n;  // JP is usually within ±10 of US nsuid (or EU if US not available)
   const HK_GAP = 50n;  // HK is usually within ±50 of EU nsuid
 
   const probeKeywords = (gameName || slug).toLowerCase()
@@ -544,8 +579,15 @@ async function findNsuids(gameUrl, emit) {
     }
   }
 
-  // JP: tight probe around US nsuid
-  const jpBase = usNsuid ? [usNsuid] : euPrimaryIds;
+  // JP: probe around US nsuid when it's numerically close to EU primary (same game family).
+  // If usNsuid is very far from EU primary it's likely a different edition returned by
+  // Algolia — fall back to EU-based probe to avoid probing the wrong nsuid range.
+  const JP_US_TRUST_RANGE = 10000n;
+  const usClose = usNsuid && euPrimaryIds.length
+    ? euBigInts.some(eu => { const d = eu > BigInt(usNsuid) ? eu - BigInt(usNsuid) : BigInt(usNsuid) - eu; return d <= JP_US_TRUST_RANGE; })
+    : !!usNsuid;
+  const jpBase = (usNsuid && usClose) ? [usNsuid] : euPrimaryIds;
+  emit(`JP probe base: ${jpBase.join(',')} (usClose=${usClose})`);
   const jpBigInts = jpBase.map(id => BigInt(id));
   const jpProbeIds = buildProbeSet(jpBase, JP_GAP);
 

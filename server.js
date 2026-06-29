@@ -373,7 +373,7 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, usNsuid }, 
     const results = [];
     for (let i = 0; i < chunks.length; i += 3) {
       const batch = await Promise.allSettled(chunks.slice(i, i + 3).map(chunk =>
-        axios.get(`https://api.ec.nintendo.com/v1/price?country=${cc}&lang=${lang}&ids=${chunk.join(',')}`, { timeout: 10000 })
+        axios.get(`https://api.ec.nintendo.com/v1/price?country=${cc}&lang=${lang}&ids=${chunk.join(',')}`, { timeout: 20000 })
       ));
       results.push(...batch);
     }
@@ -428,7 +428,7 @@ async function getNintendoPrices(nsuids, emit) {
   const entries = await Promise.all(
     Object.entries(COUNTRY_CODE).map(async ([country, code]) => {
       try {
-        const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=${code}&lang=en&ids=${idsParam}`, { timeout: 10000 });
+        const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=${code}&lang=en&ids=${idsParam}`, { timeout: 20000 });
         for (const p of (res.data?.prices || [])) {
           if (p.sales_status === 'not_found') continue;
           const price = p.discount_price || p.regular_price;

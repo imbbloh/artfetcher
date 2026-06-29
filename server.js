@@ -77,6 +77,7 @@ function saveGcPrices() {
 }
 
 loadGcPrices();
+console.log('Gift card prices loaded:', JSON.stringify(gcPrices));
 
 const cache = new Map();
 const CACHE_TTL = 4 * 60 * 60 * 1000;
@@ -447,6 +448,7 @@ async function getNintendoPrices(nsuids, emit) {
 function buildResultData(gameName, prices, rateResult) {
   const { rates: sgdRates, source: rateSource } = rateResult;
   const cnyToSgd = sgdRates['CNY'] ?? null;
+  if (cnyToSgd == null) console.warn('buildResultData: CNY rate missing — gift card pricing unavailable, falling back to live rates');
 
   function formatRaw(amount, currency) {
     const sym = { USD: 'US$', SGD: 'S$', HKD: 'HK$', BRL: 'R$', JPY: '¥', CAD: 'CA$', MXN: 'MX$', AUD: 'A$' };
@@ -580,8 +582,10 @@ function formatTelegramMessage(data, label = '') {
       ? `[${escTg(r.country)}](${r.eshopUrl})`
       : `*${escTg(r.country)}*`;
     lines.push(`${medal} ${flag} ${countryText}`);
-    if (r.rawPrice) lines.push(`  ${escTg(r.rawPrice)}  →  *${escTg(gc)}*  →  *${sgd}*`);
-    else lines.push(`  Not Available`);
+    if (r.rawPrice) {
+      const cnyNote = r.gcCnyPrice != null ? ` \\(¥${escTg(r.gcCnyPrice)} CNY\\)` : '';
+      lines.push(`  ${escTg(r.rawPrice)}  →  *${escTg(gc)}*${cnyNote}  →  *${sgd}*`);
+    } else lines.push(`  Not Available`);
     lines.push('');
   }
   lines.push(`📊 _Rates: ${escTg(data.rateSource)}_`);

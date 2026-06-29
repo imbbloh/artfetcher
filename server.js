@@ -297,10 +297,10 @@ async function findNsuidsPhase1(gameUrl, emit) {
       : Promise.resolve(),
 
     // Nintendo.com product pages (no-region and /us/ variants) → US/Americas nsuid
-    // Cap at 5 nsuids per fetch; more than that indicates a listing/category page
+    // Only keep 7001 nsuids from these pages; 7005/7007 are platform catalog IDs not usable in the price API
     ...slugVariants.flatMap(s => [
-      fetchNsuidsFrom(`https://www.nintendo.com/store/products/${s}/`, `Nintendo.com (${s})`, emit).then(ids => addMany(ids.length <= 5 ? ids : (emit(`Nintendo.com (${s}): skipped ${ids.length} nsuids (listing page)`), []))),
-      fetchNsuidsFrom(`https://www.nintendo.com/us/store/products/${s}/`, `Nintendo.com US (${s})`, emit).then(ids => addMany(ids.length <= 5 ? ids : (emit(`Nintendo.com US (${s}): skipped ${ids.length} nsuids (listing page)`), []))),
+      fetchNsuidsFrom(`https://www.nintendo.com/store/products/${s}/`, `Nintendo.com (${s})`, emit).then(ids => addMany(ids.filter(id => id.startsWith('7001')))),
+      fetchNsuidsFrom(`https://www.nintendo.com/us/store/products/${s}/`, `Nintendo.com US (${s})`, emit).then(ids => addMany(ids.filter(id => id.startsWith('7001')))),
     ]),
 
     // Algolia → verified US nsuid
@@ -337,17 +337,25 @@ async function findNsuidsPhase1(gameUrl, emit) {
 
   if (!gameName) gameName = slug;
 
-  // For Switch 2 games, Algolia/EU catalog return 7005 (platform catalog) nsuids.
-  // The direct nintendo.com fetch finds the real 7001 (eShop price API) nsuid.
-  // Prefer any 7001 nsuid as usNsuid so JP probing stays in the correct nsuid space.
-  const amer7001 = nsuids.filter(id => id.startsWith('7001'));
+  // Only 7001 (Americas eShop price API) and 7005 (EU eShop) nsuids work in the Nintendo price API.
+  // 7007 nsuids are Algolia/platform catalog IDs — they return not_found in the price API.
+  // Remove 7007 nsuids from the query set entirely.
+  const priceApiNsuids = nsuids.filter(id => !id.startsWith('7007'));
+  if (priceApiNsuids.length < nsuids.length)
+    emit(`Filtered out ${nsuids.length - priceApiNsuids.length} non-price-API nsuid(s) (7007 space)`);
+
+  // Prefer 7001 nsuid as usNsuid (eShop price API space for Americas/JP probing)
+  const amer7001 = priceApiNsuids.filter(id => id.startsWith('7001'));
   if (amer7001.length && (!usNsuid || !usNsuid.startsWith('7001'))) {
     usNsuid = amer7001[0];
     emit(`usNsuid: overriding with 7001 nsuid ${usNsuid}`);
+  } else if (usNsuid && usNsuid.startsWith('7007')) {
+    usNsuid = null;
+    emit(`usNsuid: cleared (7007 space not usable for probing)`);
   }
 
-  emit(`Phase 1 done: "${gameName}", ${nsuids.length} nsuids found`);
-  return { nsuids, seen, gameName, euNsuids, usNsuid };
+  emit(`Phase 1 done: "${gameName}", ${priceApiNsuids.length} price-API nsuids (of ${nsuids.length} total)`);
+  return { nsuids: priceApiNsuids, seen, gameName, euNsuids, usNsuid };
 }
 
 // ─── Phase 2: slow nsuid discovery (probe + eshop-prices browser) ─────────────

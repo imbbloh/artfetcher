@@ -459,11 +459,14 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, usNsuid }, 
 
   const jpBase = usNsuid ? [usNsuid] : euPrimary;
   const hkBase = euPrimary;
+  const US_GAP = 20n;
 
-  // Probes are fast (~1-2s). Run them first so JP/HK results aren't delayed by the browser.
+  // Probes are fast (~1-2s). Run them first so results aren't delayed by the browser.
+  // US probe runs only when usNsuid wasn't found in Phase 1 (Algolia/nintendo.com missed).
   await Promise.allSettled([
     probeRegion('JP', 'ja', buildProbeIds(jpBase, JP_GAP), jpBase.map(BigInt), JP_GAP),
     probeRegion('HK', 'zh', buildProbeIds(hkBase, HK_GAP), euBigInts, HK_GAP),
+    ...(!usNsuid && euPrimary.length ? [probeRegion('US', 'en', buildProbeIds(euPrimary, US_GAP), euBigInts, US_GAP)] : []),
   ]);
 
   emit(`Phase 2 done: ${newNsuids.length} additional nsuid(s)`);

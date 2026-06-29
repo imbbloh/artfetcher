@@ -229,8 +229,11 @@ async function fetchNsuidsFromEshopPricesBrowser(gameUrl, emit) {
 // Scrape a DekuDeals item page for ec.nintendo.com regional links.
 // DekuDeals embeds href="https://ec.nintendo.com/{CC}/{lang}/titles/{nsuid}" for every region,
 // giving us all regional nsuids in one page load.
+// Returns { regionMap: {CC: nsuid}, title: string }
+// DekuDeals slugs often differ from Nintendo titles (e.g. "phantom-liberty-bundle" vs "Ultimate Edition"),
+// so we scrape the page itself for both the title and all regional ec.nintendo.com links.
 async function fetchNsuidsFromDekuDealsBrowser(gameUrl, emit) {
-  if (!gameUrl.includes('dekudeals.com')) return {};
+  if (!gameUrl.includes('dekudeals.com')) return { regionMap: {}, title: '' };
   emit('DekuDeals browser: loading page...');
   let browser;
   try {
@@ -245,6 +248,9 @@ async function fetchNsuidsFromDekuDealsBrowser(gameUrl, emit) {
     }
     await page.waitForTimeout(3000);
     const html = await page.content();
+    // Extract game title from page: DekuDeals title format is "Game Name | Deku Deals"
+    const pageTitle = await page.title();
+    const title = pageTitle.replace(/\s*\|\s*Deku Deals.*$/i, '').trim();
     // Extract ec.nintendo.com/{CC}/{lang}/titles/{nsuid} links
     const regionMap = {};
     const matches = html.matchAll(/ec\.nintendo\.com\/([A-Z]{2})\/[a-z_]+\/titles\/(\d+)/g);
@@ -252,9 +258,9 @@ async function fetchNsuidsFromDekuDealsBrowser(gameUrl, emit) {
       if (/^700[0-9]\d{10}$/.test(nsuid)) regionMap[cc] = nsuid;
     }
     const regions = Object.keys(regionMap);
-    emit(`DekuDeals browser: found ${regions.length} regional nsuids [${regions.map(c => `${c}:${regionMap[c]}`).join(', ')}]`);
-    return regionMap;
-  } catch (e) { emit(`DekuDeals browser: ${e.message.slice(0, 70)}`); return {}; }
+    emit(`DekuDeals browser: title="${title}", found ${regions.length} regional nsuids [${regions.map(c => `${c}:${regionMap[c]}`).join(', ')}]`);
+    return { regionMap, title };
+  } catch (e) { emit(`DekuDeals browser: ${e.message.slice(0, 70)}`); return { regionMap: {}, title: '' }; }
   finally { if (browser) await browser.close().catch(() => {}); }
 }
 
@@ -631,31 +637,39 @@ async function buildResults(gameUrl, emit, onPartial) {
   const partialData = buildResultData(phase1.gameName, p1Prices, rateResult);
   if (onPartial) onPartial(partialData);
 
-  // Phase 2: fast probes (JP/HK) — completes in ~2s
-  const probeNsuids = await findNsuidsPhase2(gameUrl, phase1, emit);
-  const p2Nsuids = [...phase1.nsuids, ...probeNsuids];
-  const p2Prices = await getNintendoPrices(p2Nsuids, emit);
-  const p2Data = buildResultData(phase1.gameName, p2Prices, rateResult);
+  let finalNsuids, finalName;
+
+  if (gameUrl.includes('dekudeals.com')) {
+    // DekuDeals Phase 2: browser scrape the DekuDeals page.
+    // DekuDeals slugs often differ from Nintendo titles, so Phase 1 catalog may find nothing.
+    // The page contains ec.nintendo.com links for every region → exact nsuids + correct title.
+    const { regionMap, title } = await fetchNsuidsFromDekuDealsBrowser(gameUrl, emit);
+    const browserIds = Object.values(regionMap).filter(id => !phase1.seen.has(id));
+    finalNsuids = [...phase1.nsuids, ...browserIds];
+    finalName = title || phase1.gameName;
+    emit(`DekuDeals: ${browserIds.length} new nsuid(s) from browser`);
+    // Phase 3: standard eshop-prices browser runs in background (no-op for DekuDeals)
+    fetchNsuidsFromEshopPricesBrowser(gameUrl, emit).catch(() => {});
+  } else {
+    // Phase 2: fast probes (JP/HK) — completes in ~2s
+    const probeNsuids = await findNsuidsPhase2(gameUrl, phase1, emit);
+    finalNsuids = [...phase1.nsuids, ...probeNsuids];
+    finalName = phase1.gameName;
+    // Phase 3: browser (slow, background only, updates cache)
+    fetchNsuidsFromEshopPricesBrowser(gameUrl, emit).then(async (browserIds) => {
+      const newFromBrowser = browserIds.filter(id => !phase1.seen.has(id) && !probeNsuids.includes(id));
+      if (!newFromBrowser.length) { emit('Browser: no new nsuids'); return; }
+      emit(`Browser: +${newFromBrowser.length} new nsuid(s), updating cache`);
+      const p3Nsuids = [...finalNsuids, ...newFromBrowser];
+      const p3Prices = await getNintendoPrices(p3Nsuids, emit);
+      const p3Data = buildResultData(finalName, p3Prices, rateResult);
+      cache.set(gameUrl, { data: p3Data, time: Date.now() });
+    }).catch(() => {});
+  }
+
+  const p2Prices = await getNintendoPrices(finalNsuids, emit);
+  const p2Data = buildResultData(finalName, p2Prices, rateResult);
   cache.set(gameUrl, { data: p2Data, time: Date.now() });
-
-  // Phase 3: browser scrape (slow) — runs in background, only updates cache.
-  // For DekuDeals URLs: scrape the DekuDeals page for ec.nintendo.com regional links
-  //   → gives us exact JP/HK/SG/US nsuids embedded by DekuDeals.
-  // For eshop-prices URLs: scan all network responses for nsuids.
-  const phase3Promise = gameUrl.includes('dekudeals.com')
-    ? fetchNsuidsFromDekuDealsBrowser(gameUrl, emit).then(regionMap => Object.values(regionMap))
-    : fetchNsuidsFromEshopPricesBrowser(gameUrl, emit);
-
-  phase3Promise.then(async (browserIds) => {
-    const newFromBrowser = (browserIds || []).filter(id => !phase1.seen.has(id) && !probeNsuids.includes(id));
-    if (!newFromBrowser.length) { emit('Browser: no new nsuids'); return; }
-    emit(`Browser: +${newFromBrowser.length} new nsuid(s), updating cache`);
-    const p3Nsuids = [...p2Nsuids, ...newFromBrowser];
-    const p3Prices = await getNintendoPrices(p3Nsuids, emit);
-    const p3Data = buildResultData(phase1.gameName, p3Prices, rateResult);
-    cache.set(gameUrl, { data: p3Data, time: Date.now() });
-  }).catch(() => {});
-
   return p2Data;
 }
 

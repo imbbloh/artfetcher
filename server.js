@@ -273,8 +273,9 @@ async function findNsuidsPhase1(gameUrl, emit) {
         const scored = docs.map(d => ({ d, score: words.filter(w => (d.title || '').toLowerCase().includes(w)).length })).sort((a, b) => b.score - a.score);
         if (scored[0]?.d.title) gameName = scored[0].d.title;
         const before = nsuids.length;
-        for (const { d } of scored.slice(0, 5)) for (const id of (d.nsuid_txt || [])) { add(id); euNsuids.push(id); }
-        emit(`EU catalog: +${nsuids.length - before} nsuid(s)`);
+        const euIds = [];
+        for (const { d } of scored.slice(0, 5)) for (const id of (d.nsuid_txt || [])) { add(id); euNsuids.push(id); euIds.push(id); }
+        emit(`EU catalog: +${nsuids.length - before} nsuid(s) [${euIds.join(',')}]`);
       } catch (e) { emit(`EU catalog: ${e.message.slice(0, 60)}`); }
     })(),
     getAlgoliaKey(emit),
@@ -299,8 +300,8 @@ async function findNsuidsPhase1(gameUrl, emit) {
     // Nintendo.com product pages (no-region and /us/ variants) → US/Americas nsuid
     // Only keep 7001 nsuids from these pages; 7005/7007 are platform catalog IDs not usable in the price API
     ...slugVariants.flatMap(s => [
-      fetchNsuidsFrom(`https://www.nintendo.com/store/products/${s}/`, `Nintendo.com (${s})`, emit).then(ids => addMany(ids.filter(id => id.startsWith('7001')))),
-      fetchNsuidsFrom(`https://www.nintendo.com/us/store/products/${s}/`, `Nintendo.com US (${s})`, emit).then(ids => addMany(ids.filter(id => id.startsWith('7001')))),
+      fetchNsuidsFrom(`https://www.nintendo.com/store/products/${s}/`, `Nintendo.com (${s})`, emit).then(ids => { const kept = ids.filter(id => id.startsWith('7001')); if (ids.length) emit(`Nintendo.com (${s}): ${ids.length} total, keeping ${kept.length} 7001: [${kept.join(',')}]`); addMany(kept); }),
+      fetchNsuidsFrom(`https://www.nintendo.com/us/store/products/${s}/`, `Nintendo.com US (${s})`, emit).then(ids => { const kept = ids.filter(id => id.startsWith('7001')); if (ids.length) emit(`Nintendo.com US (${s}): ${ids.length} total, keeping ${kept.length} 7001: [${kept.join(',')}]`); addMany(kept); }),
     ]),
 
     // Algolia → verified US nsuid
@@ -321,8 +322,9 @@ async function findNsuidsPhase1(gameUrl, emit) {
           }
           if (best && !usNsuid) usNsuid = String(best.nsuid);
           const before = nsuids.length;
-          for (const h of hits) { add(h.nsuid); addMany(h.nsuid_txt || []); if (!gameName && h.title) gameName = h.title; }
-          emit(`Algolia ${indexName}: ${hits.length} hits, +${nsuids.length - before} new, usNsuid=${usNsuid}`);
+          const algIds = [];
+          for (const h of hits) { if (h.nsuid) algIds.push(`${h.nsuid}(txt:${(h.nsuid_txt||[]).join('+')})`); add(h.nsuid); addMany(h.nsuid_txt || []); if (!gameName && h.title) gameName = h.title; }
+          emit(`Algolia ${indexName}: ${hits.length} hits, +${nsuids.length - before} new, usNsuid=${usNsuid} [${algIds.join(', ')}]`);
           if (nsuids.length > before) break;
         } catch (e) { emit(`Algolia ${indexName}: ${e.message.slice(0, 50)}`); if (e.response?.status === 403) algoliaKeyCache.time = 0; }
       }

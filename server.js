@@ -437,7 +437,7 @@ async function findNsuidsPhase1(gameUrl, emit) {
   }
 
   emit(`Phase 1 done: "${gameName}", ${nsuids.length} nsuids found`);
-  return { nsuids, seen, gameName, euNsuids, usNsuid };
+  return { nsuids, seen, gameName, euNsuids, usNsuid, rawSlug };
 }
 
 // ─── Phase 2: slow nsuid discovery (probe + eshop-prices browser) ─────────────
@@ -656,11 +656,21 @@ async function buildResults(gameUrl, emit, onPartial) {
     finalNsuids = [...phase1.nsuids, ...probeNsuids];
     finalName = phase1.gameName;
     // Phase 3: browser (slow, background only, updates cache)
-    fetchNsuidsFromEshopPricesBrowser(gameUrl, emit).then(async (browserIds) => {
-      const newFromBrowser = browserIds.filter(id => !phase1.seen.has(id) && !probeNsuids.includes(id));
-      if (!newFromBrowser.length) { emit('Browser: no new nsuids'); return; }
-      emit(`Browser: +${newFromBrowser.length} new nsuid(s), updating cache`);
-      const p3Nsuids = [...finalNsuids, ...newFromBrowser];
+    // Try both eshop-prices browser AND DekuDeals browser (using same slug).
+    // DekuDeals embeds SG/HK/JP regional nsuids that eshop-prices Cloudflare blocks.
+    const p3Slug = phase1.rawSlug || extractSlugFromUrl(gameUrl);
+    const dekuUrl = `https://www.dekudeals.com/items/${p3Slug}`;
+    Promise.allSettled([
+      fetchNsuidsFromEshopPricesBrowser(gameUrl, emit).then(ids => ids),
+      fetchNsuidsFromDekuDealsBrowser(dekuUrl, emit).then(({ regionMap }) => Object.values(regionMap)),
+    ]).then(async (results) => {
+      const allNew = [...new Set(
+        results.flatMap(r => r.status === 'fulfilled' ? r.value : [])
+          .filter(id => /^700[0-9]\d{10}$/.test(id) && !phase1.seen.has(id) && !probeNsuids.includes(id))
+      )];
+      if (!allNew.length) { emit('Browser: no new nsuids'); return; }
+      emit(`Browser: +${allNew.length} new nsuid(s), updating cache`);
+      const p3Nsuids = [...finalNsuids, ...allNew];
       const p3Prices = await getNintendoPrices(p3Nsuids, emit);
       const p3Data = buildResultData(finalName, p3Prices, rateResult);
       cache.set(gameUrl, { data: p3Data, time: Date.now() });

@@ -335,6 +335,18 @@ async function findNsuidsPhase1(gameUrl, emit) {
       const ids = (JSON.stringify(r.data).match(/700[0-9]\d{10}/g) || []);
       addMany(ids); if (ids.length) emit(`eshop-prices API: +${ids.length} nsuid(s)`);
     }).catch(e => emit(`eshop-prices API: ${e.message.slice(0, 50)}`)) : Promise.resolve(),
+
+    // eshop-prices.com HTML page — Nuxt SSR embeds all regional nsuids (incl. SG/HK) before JS
+    gameId ? axios.get(`https://eshop-prices.com/games/${gameId}`, {
+      timeout: 10000,
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', 'Accept': 'text/html,application/xhtml+xml' },
+    }).then(r => {
+      const ids = [...new Set((String(r.data).match(/700[0-9]\d{10}/g) || []))];
+      const before = nsuids.length;
+      addMany(ids);
+      if (nsuids.length > before) emit(`eshop-prices HTML: +${nsuids.length - before} nsuid(s) [${ids.join(',')}]`);
+      else emit(`eshop-prices HTML: fetched but no new nsuids`);
+    }).catch(e => emit(`eshop-prices HTML: ${e.message.slice(0, 60)}`)) : Promise.resolve(),
   ]);
 
   if (!gameName) gameName = slug;

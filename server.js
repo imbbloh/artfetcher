@@ -130,7 +130,7 @@ async function getAlgoliaKey(emit) {
 async function fetchNsuidsFrom(url, label, emit) {
   try {
     const res = await axios.get(url, { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'text/html,application/json' } });
-    const found = [...new Set((String(res.data).match(/7001\d{10}/g) || []))];
+    const found = [...new Set((String(res.data).match(/700[0-9]\d{10}/g) || []))];
     if (found.length) emit(`${label}: ${found.length} nsuid(s)`);
     return found;
   } catch (e) { emit(`${label}: ${e.message.slice(0, 60)}`); return []; }
@@ -148,9 +148,9 @@ async function fetchNsuidsFromEshopPricesBrowser(gameUrl, emit) {
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
     const found = new Set();
     page.on('response', async resp => {
-      try { (await resp.text()).match(/7001\d{10}/g)?.forEach(id => found.add(id)); } catch {}
+      try { (await resp.text()).match(/700[0-9]\d{10}/g)?.forEach(id => found.add(id)); } catch {}
     });
-    page.on('request', req => { req.url().match(/7001\d{10}/g)?.forEach(id => found.add(id)); });
+    page.on('request', req => { req.url().match(/700[0-9]\d{10}/g)?.forEach(id => found.add(id)); });
     await page.goto(gameUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
     const t = await page.title();
     if (t.includes('Just a moment') || t.includes('Attention Required')) {
@@ -159,9 +159,9 @@ async function fetchNsuidsFromEshopPricesBrowser(gameUrl, emit) {
     }
     await page.waitForTimeout(8000);
     const html = await page.content();
-    html.match(/7001\d{10}/g)?.forEach(id => found.add(id));
+    html.match(/700[0-9]\d{10}/g)?.forEach(id => found.add(id));
     const state = await page.evaluate(() => { try { return JSON.stringify(window.__NUXT__ || window.__NEXT_DATA__ || {}); } catch { return ''; } }).catch(() => '');
-    state.match(/7001\d{10}/g)?.forEach(id => found.add(id));
+    state.match(/700[0-9]\d{10}/g)?.forEach(id => found.add(id));
     emit(`Browser: ${found.size} nsuid(s) captured from eshop-prices.com`);
     return [...found];
   } catch (e) { emit(`Browser: ${e.message.slice(0, 70)}`); return []; }
@@ -176,7 +176,10 @@ function extractSlugFromUrl(gameUrl) {
   // nintendo.com/us/store/products/{slug}/ → strip trailing -switch/-nintendo-switch
   const nintendoMatch = gameUrl.match(/nintendo\.com\/[a-z]{2}\/store\/products\/([^/?#]+)/i);
   if (nintendoMatch) {
-    return nintendoMatch[1].replace(/-(nintendo-)?switch$/, '');
+    // Strip platform suffixes: -switch-2, -nintendo-switch-2, -switch, -nintendo-switch
+    return nintendoMatch[1]
+      .replace(/-(nintendo-)?switch-2$/, '')
+      .replace(/-(nintendo-)?switch$/, '');
   }
   // eshop-prices: /games/123-some-slug  → strip numeric prefix
   // dekudeals: /items/some-slug
@@ -198,7 +201,7 @@ async function findNsuidsPhase1(gameUrl, emit) {
   let usNsuid = null;
   let gameName = '';
 
-  const add = (id) => { const s = String(id || ''); if (/^7001\d{10}$/.test(s) && !seen.has(s)) { seen.add(s); nsuids.push(s); } };
+  const add = (id) => { const s = String(id || ''); if (/^700[0-9]\d{10}$/.test(s) && !seen.has(s)) { seen.add(s); nsuids.push(s); } };
   const addMany = (ids) => { for (const id of (ids || [])) add(id); };
 
   emit(`Searching for "${slug}"...`);
@@ -241,7 +244,7 @@ async function findNsuidsPhase1(gameUrl, emit) {
           // Pick usNsuid from the hit whose title best matches gameName (avoid bundles)
           let best = null, bestScore = -1;
           for (const h of hits) {
-            if (!h.nsuid || !/^7001\d{10}$/.test(String(h.nsuid))) continue;
+            if (!h.nsuid || !/^700[0-9]\d{10}$/.test(String(h.nsuid))) continue;
             const score = titleWords.filter(w => (h.title || '').toLowerCase().includes(w)).length;
             if (score > bestScore) { bestScore = score; best = h; }
           }
@@ -256,7 +259,7 @@ async function findNsuidsPhase1(gameUrl, emit) {
 
     // eshop-prices.com JSON API (fast, usually 403 on Render)
     gameId ? axios.get(`https://eshop-prices.com/games/${gameId}.json`, { timeout: 8000 }).then(r => {
-      const ids = (JSON.stringify(r.data).match(/7001\d{10}/g) || []);
+      const ids = (JSON.stringify(r.data).match(/700[0-9]\d{10}/g) || []);
       addMany(ids); if (ids.length) emit(`eshop-prices API: +${ids.length} nsuid(s)`);
     }).catch(e => emit(`eshop-prices API: ${e.message.slice(0, 50)}`)) : Promise.resolve(),
   ]);
@@ -270,7 +273,7 @@ async function findNsuidsPhase1(gameUrl, emit) {
 
 async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, usNsuid }, emit) {
   const newNsuids = [];
-  const addNew = (id) => { const s = String(id || ''); if (/^7001\d{10}$/.test(s) && !seen.has(s)) { seen.add(s); newNsuids.push(s); } };
+  const addNew = (id) => { const s = String(id || ''); if (/^700[0-9]\d{10}$/.test(s) && !seen.has(s)) { seen.add(s); newNsuids.push(s); } };
 
   const SAME_RANGE = 10000n;
   const JP_GAP = 10n;
@@ -297,7 +300,7 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, usNsuid }, 
       const bn = BigInt(b);
       for (let d = 1n; d <= gap; d++)
         for (const p of [String(bn + d), String(bn - d)])
-          if (/^7001\d{10}$/.test(p) && !seen.has(p)) s.add(p);
+          if (/^700[0-9]\d{10}$/.test(p) && !seen.has(p)) s.add(p);
     }
     return [...s];
   }

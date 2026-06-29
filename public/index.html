@@ -451,16 +451,22 @@
       // Rates footer
       const footer = document.getElementById('rates-footer');
       footer.innerHTML = '';
-      const SUPPLY_CURRENCIES = ['USD', 'BRL', 'CAD', 'MXN', 'AUD'];
+      const GC_CURRENCIES = ['USD', 'BRL', 'CAD', 'MXN', 'AUD'];
       for (const [cur, rate] of Object.entries(data.sgdRates)) {
         if (cur === 'SGD' || cur === 'CNY') continue;
         const chip = document.createElement('span');
         chip.className = 'rate-chip';
-        if (SUPPLY_CURRENCIES.includes(cur) && data.supplyRates?.[cur] != null && data.cnyToSgd != null) {
-          const effectiveSgd = data.supplyRates[cur] * data.cnyToSgd;
-          chip.textContent = `1 ${cur} = ${data.supplyRates[cur]} CNY (≈ S$${effectiveSgd.toFixed(4)})`;
-          chip.title = 'Supply rate (gift card cost in CNY)';
-          chip.style.borderColor = 'rgba(108,99,255,.4)';
+        if (GC_CURRENCIES.includes(cur) && data.gcPrices?.[cur]) {
+          // Show each denomination's CNY price
+          const entries = Object.entries(data.gcPrices[cur]);
+          const parts = entries.map(([d, cny]) => cny != null ? `${cur}${d}=¥${cny}` : null).filter(Boolean);
+          if (parts.length) {
+            chip.textContent = parts.join(' · ');
+            chip.title = `Gift card CNY prices (1 CNY ≈ S$${data.cnyToSgd?.toFixed(4)})`;
+            chip.style.borderColor = 'rgba(108,99,255,.4)';
+          } else {
+            chip.textContent = `1 ${cur} = ${rate.toFixed(4)} SGD`;
+          }
         } else {
           chip.textContent = `1 ${cur} = ${rate.toFixed(4)} SGD`;
         }

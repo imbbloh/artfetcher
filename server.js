@@ -42,33 +42,41 @@ const ESHOP_URL = {
   'Singapore':     (id) => `https://ec.nintendo.com/SG//titles/${id}`,
 };
 
-// Currencies priced via gift cards bought in CNY
-const SUPPLY_RATE_CURRENCIES = ['USD', 'BRL', 'CAD', 'MXN', 'AUD'];
-const SUPPLY_RATES_FILE = path.join(__dirname, 'data', 'supply-rates.json');
+// CNY price per gift-card denomination. null = not set (falls back to live rate).
+// Structure: { USD: { '5': 33, '10': 60 }, BRL: { '30': 40.9, '50': 62.9 }, ... }
+const GC_CURRENCIES = ['USD', 'BRL', 'CAD', 'MXN', 'AUD'];
+const GC_PRICES_FILE = path.join(__dirname, 'data', 'giftcard-prices.json');
 
-// CNY per 1 unit of each gift-card currency (null = fall back to live rate)
-let supplyRates = { USD: null, BRL: null, CAD: null, MXN: null, AUD: null };
+let gcPrices = {
+  USD: { '5': null, '10': null },
+  BRL: { '30': null, '50': null },
+  CAD: { '10': null, '20': null, '25': null },
+  MXN: { '100': null, '200': null, '350': null },
+  AUD: { '15': null },
+};
 
-function loadSupplyRates() {
+function loadGcPrices() {
   try {
     const fs = require('fs');
-    if (fs.existsSync(SUPPLY_RATES_FILE)) {
-      const saved = JSON.parse(fs.readFileSync(SUPPLY_RATES_FILE, 'utf8'));
-      for (const [k, v] of Object.entries(saved))
-        if (k in supplyRates && typeof v === 'number') supplyRates[k] = v;
+    if (fs.existsSync(GC_PRICES_FILE)) {
+      const saved = JSON.parse(fs.readFileSync(GC_PRICES_FILE, 'utf8'));
+      for (const [cur, denoms] of Object.entries(saved))
+        if (cur in gcPrices && denoms && typeof denoms === 'object')
+          for (const [d, v] of Object.entries(denoms))
+            if (d in gcPrices[cur] && (typeof v === 'number' || v === null)) gcPrices[cur][d] = v;
     }
   } catch {}
 }
 
-function saveSupplyRates() {
+function saveGcPrices() {
   try {
     const fs = require('fs');
-    fs.mkdirSync(path.dirname(SUPPLY_RATES_FILE), { recursive: true });
-    fs.writeFileSync(SUPPLY_RATES_FILE, JSON.stringify(supplyRates, null, 2));
+    fs.mkdirSync(path.dirname(GC_PRICES_FILE), { recursive: true });
+    fs.writeFileSync(GC_PRICES_FILE, JSON.stringify(gcPrices, null, 2));
   } catch {}
 }
 
-loadSupplyRates();
+loadGcPrices();
 
 const cache = new Map();
 const CACHE_TTL = 4 * 60 * 60 * 1000;
@@ -455,17 +463,24 @@ function buildResultData(gameName, prices, rateResult) {
     const effectiveAmount = denoms ? minGiftCardAmount(p.amount, denoms) : p.amount;
 
     let sgdPrice = null;
+    let gcCnyPrice = null; // CNY paid for the gift card used
     if (currency === 'SGD') {
       sgdPrice = effectiveAmount;
-    } else if (SUPPLY_RATE_CURRENCIES.includes(currency) && supplyRates[currency] != null && cnyToSgd != null) {
-      // Cost = gift-card denomination × (CNY per unit supply price) × (SGD per CNY)
-      sgdPrice = effectiveAmount * supplyRates[currency] * cnyToSgd;
+    } else if (GC_CURRENCIES.includes(currency) && effectiveAmount != null && cnyToSgd != null) {
+      const denomKey = Number.isInteger(effectiveAmount) ? String(effectiveAmount) : effectiveAmount.toFixed(2);
+      const cny = gcPrices[currency]?.[denomKey] ?? null;
+      if (cny != null) {
+        gcCnyPrice = cny;
+        sgdPrice = cny * cnyToSgd;
+      } else if (sgdRates[currency] != null) {
+        sgdPrice = effectiveAmount * sgdRates[currency];
+      }
     } else if (sgdRates[currency] != null && effectiveAmount != null) {
       sgdPrice = effectiveAmount * sgdRates[currency];
     }
 
     const eshopUrl = ESHOP_URL[country] ? ESHOP_URL[country](p.nsuid) : null;
-    return { country, currency, rawPrice, amount: p.amount, effectiveAmount, denoms, sgdPrice, onSale: p.onSale, eshopUrl };
+    return { country, currency, rawPrice, amount: p.amount, effectiveAmount, denoms, sgdPrice, gcCnyPrice, onSale: p.onSale, eshopUrl };
   });
 
   results.sort((a, b) => {
@@ -475,7 +490,7 @@ function buildResultData(gameName, prices, rateResult) {
     return a.sgdPrice - b.sgdPrice;
   });
 
-  return { gameName, rateSource, sgdRates, supplyRates: { ...supplyRates }, cnyToSgd, results };
+  return { gameName, rateSource, sgdRates, gcPrices: JSON.parse(JSON.stringify(gcPrices)), cnyToSgd, results };
 }
 
 // ─── Main pipeline ────────────────────────────────────────────────────────────
@@ -515,8 +530,8 @@ async function buildResults(gameUrl, emit, onPartial) {
 
 // ─── Web: SSE endpoint ────────────────────────────────────────────────────────
 
-app.get('/api/supply-rates', (req, res) => {
-  res.json({ supplyRates, currencies: SUPPLY_RATE_CURRENCIES });
+app.get('/api/giftcard-prices', (req, res) => {
+  res.json({ gcPrices, currencies: GC_CURRENCIES });
 });
 
 app.get('/api/fetch', async (req, res) => {
@@ -623,17 +638,19 @@ function startTelegramBot() {
     }
   }
 
-  function formatSupplyRates() {
-    const lines = ['📊 *Gift Card Supply Rates* \\(CNY per unit\\)\n'];
-    for (const cur of SUPPLY_RATE_CURRENCIES) {
-      const rate = supplyRates[cur];
-      const denoms = GIFT_CARD_DENOMS[cur];
-      const denomStr = denoms ? `\\[${denoms.join('/')}\\]` : 'exact';
-      lines.push(rate != null
-        ? `• ${cur} ${denomStr}: *${rate} CNY* per unit`
-        : `• ${cur} ${denomStr}: _not set \\(using live rate\\)_`);
+  function escGc(s) { return String(s).replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&'); }
+
+  function formatGcPrices() {
+    const lines = ['🎴 *Gift Card Prices* \\(CNY\\)\n'];
+    for (const cur of GC_CURRENCIES) {
+      lines.push(`*${cur}*`);
+      for (const [denom, cny] of Object.entries(gcPrices[cur])) {
+        lines.push(cny != null
+          ? `  ${cur} ${denom} → *${escGc(cny)} CNY*`
+          : `  ${cur} ${denom} → _not set_`);
+      }
     }
-    lines.push('\n_Update with_ `/setrate USD 7.35`');
+    lines.push('\n_Update with_ `/updategiftcard USD 10 60`');
     return lines.join('\n');
   }
 
@@ -645,50 +662,40 @@ function startTelegramBot() {
     if (match) {
       await handleUrl(chatId, match[0], msg.message_id);
 
-    } else if (/^\/rates\b/.test(text)) {
-      await bot.sendMessage(chatId, formatSupplyRates(), { parse_mode: 'MarkdownV2' });
+    } else if (/^\/giftcards?\b/.test(text)) {
+      await bot.sendMessage(chatId, formatGcPrices(), { parse_mode: 'MarkdownV2' });
 
-    } else if (/^\/setrate\b/.test(text)) {
-      const m = text.match(/^\/setrate\s+([A-Z]{3})\s+([\d.]+)/i);
+    } else if (/^\/updategiftcard\b/.test(text)) {
+      // /updategiftcard USD 10 60  or  /updategiftcard BRL 30 40.9
+      const m = text.match(/^\/updategiftcard\s+([A-Z]{3})\s+([\d.]+)\s+([\d.]+)/i);
       if (!m) {
-        await bot.sendMessage(chatId, '⚠️ Usage: `/setrate USD 7\\.35`\nSupported: ' + SUPPLY_RATE_CURRENCIES.join(', '), { parse_mode: 'MarkdownV2' });
+        await bot.sendMessage(chatId,
+          '⚠️ Usage: `/updategiftcard USD 10 60`\n_currency · denomination · CNY price_\nSupported: ' + escGc(GC_CURRENCIES.join(', ')),
+          { parse_mode: 'MarkdownV2' });
         return;
       }
       const cur = m[1].toUpperCase();
-      const rate = parseFloat(m[2]);
-      if (!(cur in supplyRates) || isNaN(rate) || rate <= 0) {
-        await bot.sendMessage(chatId, `⚠️ Invalid\\. Supported currencies: ${SUPPLY_RATE_CURRENCIES.join(', ')}`, { parse_mode: 'MarkdownV2' });
+      const denom = m[2];
+      const cny = parseFloat(m[3]);
+      if (!(cur in gcPrices) || !(denom in gcPrices[cur]) || isNaN(cny) || cny <= 0) {
+        const validDenoms = cur in gcPrices ? Object.keys(gcPrices[cur]).join(', ') : 'n/a';
+        await bot.sendMessage(chatId,
+          `⚠️ Invalid\\. ${escGc(cur)} denominations: ${escGc(validDenoms)}\nSupported currencies: ${escGc(GC_CURRENCIES.join(', '))}`,
+          { parse_mode: 'MarkdownV2' });
         return;
       }
-      supplyRates[cur] = rate;
-      saveSupplyRates();
-      cache.clear(); // invalidate cached prices
-      await bot.sendMessage(chatId,
-        `✅ ${cur} supply rate set to *${rate} CNY* per unit\\.\nAll price caches cleared\\.`,
-        { parse_mode: 'MarkdownV2' }
-      );
-
-    } else if (/^\/clearrate\b/.test(text)) {
-      const m = text.match(/^\/clearrate\s+([A-Z]{3})/i);
-      if (!m) {
-        await bot.sendMessage(chatId, '⚠️ Usage: `/clearrate USD`', { parse_mode: 'MarkdownV2' });
-        return;
-      }
-      const cur = m[1].toUpperCase();
-      if (!(cur in supplyRates)) {
-        await bot.sendMessage(chatId, `⚠️ ${cur} is not a supply\\-rate currency\\.`, { parse_mode: 'MarkdownV2' });
-        return;
-      }
-      supplyRates[cur] = null;
-      saveSupplyRates();
+      gcPrices[cur][denom] = cny;
+      saveGcPrices();
       cache.clear();
-      await bot.sendMessage(chatId, `✅ ${cur} supply rate cleared \\(reverting to live exchange rate\\)\\.`, { parse_mode: 'MarkdownV2' });
+      await bot.sendMessage(chatId,
+        `✅ *${cur} ${denom}* gift card set to *${escGc(cny)} CNY*\\.\nPrice caches cleared\\.`,
+        { parse_mode: 'MarkdownV2' });
 
     } else if (/^\/start|\/help/.test(text)) {
       await bot.sendMessage(chatId,
         '👋 Send me a game link and I\'ll show you the best prices in SGD\\.\n\n' +
         '*Supported URLs:*\n• eshop\\-prices\\.com/games/\\.\\.\\.\n• dekudeals\\.com/items/\\.\\.\\.\n• nintendo\\.com/\\*/store/products/\\.\\.\\.\n\n' +
-        '*Gift card commands:*\n• `/rates` — view supply rates\n• `/setrate USD 7\\.35` — set CNY price per unit\n• `/clearrate USD` — revert to live rate\n\n' +
+        '*Gift card commands:*\n• `/giftcards` — view all current CNY prices\n• `/updategiftcard USD 10 60` — set CNY price for a denomination\n\n' +
         '*Example:*\n`https://eshop\\-prices\\.com/games/17496\\-cyberpunk\\-2077\\-ultimate\\-edition`',
         { parse_mode: 'MarkdownV2' }
       );

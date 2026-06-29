@@ -270,7 +270,13 @@ async function findNsuidsPhase1(gameUrl, emit) {
       try {
         const res = await axios.get(`https://searching.nintendo-europe.com/en/select?q=${q}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`, { timeout: 12000 });
         const docs = res.data?.response?.docs || [];
-        const scored = docs.map(d => ({ d, score: words.filter(w => (d.title || '').toLowerCase().includes(w)).length })).sort((a, b) => b.score - a.score);
+        // Require all distinctive keywords (length ≥5) to match — prevents "Resident Evil"
+        // matching a search for "Resident Evil Requiem" and anchoring probes to the wrong game.
+        const distinctWords = words.filter(w => w.length >= 5);
+        const scored = docs
+          .filter(d => distinctWords.every(w => (d.title || '').toLowerCase().includes(w)))
+          .map(d => ({ d, score: words.filter(w => (d.title || '').toLowerCase().includes(w)).length }))
+          .sort((a, b) => b.score - a.score);
         if (scored[0]?.d.title) gameName = scored[0].d.title;
         const before = nsuids.length;
         const euIds = [];

@@ -482,7 +482,10 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, usNsuid }, 
     else emit(`${cc} probe: none accepted (verified=${verifiedHits.length}, closeAny=${closeAny.length})`);
   }
 
-  const jpBase = usNsuid ? [usNsuid] : euPrimary;
+  // JP probe anchors: use both usNsuid and euPrimary (AU nsuid).
+  // AU is always reliably found; JP is often AU±1. Using both ensures coverage
+  // when US and AU nsuids differ slightly.
+  const jpBase = [...new Set([...(usNsuid ? [usNsuid] : []), ...euPrimary])];
   const hkBase = euPrimary;
   const US_GAP = 20n;
 

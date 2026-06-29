@@ -180,9 +180,9 @@ function formatNintendoPrice(amount, currency) {
   return `${prefix}${value}`;
 }
 
-// Use Playwright to load an eshop-prices.com game page and intercept Nintendo API calls
-// made by the page (api.ec.nintendo.com/v1/price?country=XX&ids=NSUID,...).
-// This captures all regional nsuids including SG/HK/JP in one shot.
+// Use Playwright to load an eshop-prices.com game page and extract regional nsuids.
+// eshop-prices uses its own backend (not Nintendo APIs directly), so nsuids come from
+// their JS page state or API responses — we capture both.
 async function fetchNsuidsFromEshopPricesBrowser(gameUrl, emit) {
   if (!gameUrl.includes('eshop-prices.com')) return [];
   emit('Launching browser to capture nsuids from eshop-prices.com...');
@@ -196,26 +196,18 @@ async function fetchNsuidsFromEshopPricesBrowser(gameUrl, emit) {
     const page = await browser.newPage();
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
 
-    // Intercept Nintendo price API calls — the page fetches prices per country,
-    // each request includes the correct regional nsuid in the ids= param.
     const interceptedNsuids = new Set();
-    page.on('request', req => {
-      const url = req.url();
-      if (url.includes('api.ec.nintendo.com/v1/price')) {
-        const m = url.match(/[?&]ids=([^&]+)/);
-        if (m) m[1].split(',').forEach(id => { if (/^7001\d{10}$/.test(id)) interceptedNsuids.add(id); });
-      }
-    });
-    // Also capture nsuids from XHR/fetch responses (JSON bodies)
+
+    // Capture nsuids from ALL network responses (eshop-prices uses its own backend)
     page.on('response', async resp => {
       try {
-        const url = resp.url();
-        if (!url.includes('eshop-prices.com') && !url.includes('nintendo.com')) return;
-        const ct = resp.headers()['content-type'] || '';
-        if (!ct.includes('json')) return;
         const text = await resp.text().catch(() => '');
         (text.match(/7001\d{10}/g) || []).forEach(id => interceptedNsuids.add(id));
       } catch {}
+    });
+    // Also capture from outbound request URLs (in case Nintendo API is called directly)
+    page.on('request', req => {
+      (req.url().match(/7001\d{10}/g) || []).forEach(id => interceptedNsuids.add(id));
     });
 
     await page.goto(gameUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
@@ -226,16 +218,28 @@ async function fetchNsuidsFromEshopPricesBrowser(gameUrl, emit) {
       emit('eshop-prices: Cloudflare detected, waiting...');
       await page.waitForFunction(
         () => !document.title.includes('Just a moment') && !document.title.includes('Attention Required'),
-        { timeout: 20000 }
+        { timeout: 25000 }
       ).catch(() => {});
     }
 
-    // Wait for the page to trigger its Nintendo API price calls
-    await page.waitForTimeout(5000);
+    // Wait for dynamic price sections to render and their API calls to complete
+    await page.waitForTimeout(8000);
 
-    // Also scan rendered HTML for any 7001 nsuids in links/data attributes
-    const html = await page.content();
-    (html.match(/7001\d{10}/g) || []).forEach(id => interceptedNsuids.add(id));
+    // Extract nsuids from the page's JavaScript global state (Nuxt/Next/Vue pre-loaded data)
+    const stateNsuids = await page.evaluate(() => {
+      const text = document.documentElement.innerHTML;
+      return (text.match(/7001\d{10}/g) || []);
+    }).catch(() => []);
+    stateNsuids.forEach(id => interceptedNsuids.add(id));
+
+    // Also try extracting from window.__NUXT__ or similar global state objects
+    const globalNsuids = await page.evaluate(() => {
+      try {
+        const state = JSON.stringify(window.__NUXT__ || window.__NEXT_DATA__ || window.__INITIAL_STATE__ || {});
+        return (state.match(/7001\d{10}/g) || []);
+      } catch { return []; }
+    }).catch(() => []);
+    globalNsuids.forEach(id => interceptedNsuids.add(id));
 
     const found = [...interceptedNsuids];
     emit(`eshop-prices browser: ${found.length} nsuid(s) captured`);
@@ -545,11 +549,15 @@ async function findNsuids(gameUrl, emit) {
     // formal_name is the official game title returned per nsuid — use it for keyword
     // matching instead of scraping the SPA page (which returns an empty skeleton).
     const allCandidates = [];
+    let loggedFields = false;
     for (const r of chunkResults) {
       if (r.status !== 'fulfilled') continue;
       for (const p of (r.value.data?.prices || [])) {
+        if (!loggedFields) { emit(`${cc} price API fields: ${Object.keys(p).join(',')}`); loggedFields = true; }
         if (p.sales_status !== 'not_found' && (p.regular_price || p.discount_price) && !seen.has(String(p.title_id))) {
-          allCandidates.push({ id: String(p.title_id), name: (p.formal_name || '').toLowerCase() });
+          // Try every field that might contain a title
+          const name = (p.formal_name || p.title || p.name || '').toLowerCase();
+          allCandidates.push({ id: String(p.title_id), name });
         }
       }
     }

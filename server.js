@@ -450,8 +450,9 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, usNsuid }, 
 
     const verified = ranked.map(({ id, name, gap }) => ({ id, gap, name, kwMatch: name.length > 0 && probeKeywords.some(kw => name.includes(kw)) }));
     const verifiedHits = verified.filter(r => r.kwMatch);
+    // Accept unnamed candidates within gap 3 — pick smallest gap (regional nsuids are assigned sequentially)
     const closeUnnamed = verified.filter(r => !r.kwMatch && !r.name && r.gap <= 3n);
-    const best = [...verifiedHits, ...(closeUnnamed.length === 1 ? closeUnnamed : [])].sort((a, b) => (a.gap < b.gap ? -1 : a.gap > b.gap ? 1 : 0))[0];
+    const best = [...verifiedHits, ...closeUnnamed].sort((a, b) => (a.gap < b.gap ? -1 : a.gap > b.gap ? 1 : 0))[0];
     if (best) { addNew(best.id); emit(`${cc} probe: accepted ${best.id} (gap ${best.gap}, verified=${best.kwMatch})`); }
     else emit(`${cc} probe: none accepted (verified=${verifiedHits.length}, closeUnnamed=${closeUnnamed.length})`);
   }

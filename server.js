@@ -297,9 +297,10 @@ async function findNsuidsPhase1(gameUrl, emit) {
       : Promise.resolve(),
 
     // Nintendo.com product pages (no-region and /us/ variants) → US/Americas nsuid
+    // Cap at 5 nsuids per fetch; more than that indicates a listing/category page
     ...slugVariants.flatMap(s => [
-      fetchNsuidsFrom(`https://www.nintendo.com/store/products/${s}/`, `Nintendo.com (${s})`, emit).then(addMany),
-      fetchNsuidsFrom(`https://www.nintendo.com/us/store/products/${s}/`, `Nintendo.com US (${s})`, emit).then(addMany),
+      fetchNsuidsFrom(`https://www.nintendo.com/store/products/${s}/`, `Nintendo.com (${s})`, emit).then(ids => addMany(ids.length <= 5 ? ids : (emit(`Nintendo.com (${s}): skipped ${ids.length} nsuids (listing page)`), []))),
+      fetchNsuidsFrom(`https://www.nintendo.com/us/store/products/${s}/`, `Nintendo.com US (${s})`, emit).then(ids => addMany(ids.length <= 5 ? ids : (emit(`Nintendo.com US (${s}): skipped ${ids.length} nsuids (listing page)`), []))),
     ]),
 
     // Algolia → verified US nsuid
@@ -444,13 +445,16 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, usNsuid }, 
 // ─── Nintendo price API ───────────────────────────────────────────────────────
 
 async function getNintendoPrices(nsuids, emit) {
-  emit('Querying Nintendo eShop API...');
+  emit(`Querying Nintendo eShop API (${nsuids.length} nsuids)...`);
   const idsParam = nsuids.join(',');
   const entries = await Promise.all(
     Object.entries(COUNTRY_CODE).map(async ([country, code]) => {
       try {
         const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=${code}&lang=en&ids=${idsParam}`, { timeout: 20000 });
-        for (const p of (res.data?.prices || [])) {
+        const prices = res.data?.prices || [];
+        const found = prices.filter(p => p.sales_status !== 'not_found' && (p.discount_price || p.regular_price));
+        if (country === 'US') emit(`US price API: ${prices.length} total, ${found.length} priced, ${prices.length - found.length} not_found`);
+        for (const p of prices) {
           if (p.sales_status === 'not_found') continue;
           const price = p.discount_price || p.regular_price;
           if (!price) continue;

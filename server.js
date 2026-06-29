@@ -488,15 +488,24 @@ async function findNsuids(gameUrl, emit) {
     .split(/[\s\-:™®©,.'!?]+/)
     .filter(w => w.length >= 3 || /^\d{3,}$/.test(w));
 
-  const euSorted = [...euNsuids].sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1));
-  const primaryEu = euSorted.length ? BigInt(euSorted[0]) : null;
-  const euPrimaryIds = primaryEu
-    ? euNsuids.filter(id => { const d = BigInt(id) - primaryEu; return (d < 0n ? -d : d) <= SAME_RANGE; })
+  // Anchor EU primary to the EU nsuid CLOSEST to usNsuid (not the numerically smallest).
+  // Example: Overcooked AYCA has euNsuids=[29236, 882, 3401, ...]. The smallest is 882
+  // (a different Overcooked game), but usNsuid=29237 so closest EU is 29236 (the real one).
+  const anchorEu = usNsuid && euNsuids.length
+    ? euNsuids.reduce((best, id) => {
+        const d = BigInt(usNsuid) > BigInt(id) ? BigInt(usNsuid) - BigInt(id) : BigInt(id) - BigInt(usNsuid);
+        const bd = BigInt(usNsuid) > BigInt(best) ? BigInt(usNsuid) - BigInt(best) : BigInt(best) - BigInt(usNsuid);
+        return d < bd ? id : best;
+      })
+    : (euNsuids.length ? euNsuids.reduce((a, b) => (BigInt(a) < BigInt(b) ? a : b)) : null);
+
+  const euPrimaryIds = anchorEu
+    ? euNsuids.filter(id => { const d = BigInt(id) > BigInt(anchorEu) ? BigInt(id) - BigInt(anchorEu) : BigInt(anchorEu) - BigInt(id); return d <= SAME_RANGE; })
     : [];
   const euBigInts = euPrimaryIds.map(id => BigInt(id));
-  emit(`Probe: usNsuid=${usNsuid} euNsuids=[${euNsuids.join(',')}] euPrimary=[${euPrimaryIds.join(',')}]`);
+  emit(`Probe: usNsuid=${usNsuid} anchorEu=${anchorEu} euPrimary=[${euPrimaryIds.join(',')}]`);
 
-  // Build probe ID set for each region separately
+  // Build probe ID set for a given set of base IDs and gap radius
   function buildProbeSet(bases, gap) {
     const s = new Set();
     for (const b of bases) {
@@ -510,7 +519,10 @@ async function findNsuids(gameUrl, emit) {
     return [...s];
   }
 
-  // Query price API in chunks of 50, throttling 3 concurrent chunks at a time
+  // Query price API in chunks of 50 (max per request), throttling 3 concurrent calls.
+  // Returns candidates with their formal_name from the API response — used for title
+  // verification without a separate HTTP fetch (ec.nintendo.com is a React SPA; axios
+  // gets a JS skeleton with empty <title>, so HTML verification never worked).
   async function probeRegion(cc, lang, probeIds, baseBigInts, maxGap) {
     if (!probeIds.length) { emit(`${cc} probe: skipped (no probe base)`); return; }
     const CHUNK = 50;
@@ -529,12 +541,15 @@ async function findNsuids(gameUrl, emit) {
       chunkResults.push(...batchRes);
     }
 
+    // Collect candidates WITH their formal_name from the price API response.
+    // formal_name is the official game title returned per nsuid — use it for keyword
+    // matching instead of scraping the SPA page (which returns an empty skeleton).
     const allCandidates = [];
     for (const r of chunkResults) {
       if (r.status !== 'fulfilled') continue;
       for (const p of (r.value.data?.prices || [])) {
         if (p.sales_status !== 'not_found' && (p.regular_price || p.discount_price) && !seen.has(String(p.title_id))) {
-          allCandidates.push(String(p.title_id));
+          allCandidates.push({ id: String(p.title_id), name: (p.formal_name || '').toLowerCase() });
         }
       }
     }
@@ -542,56 +557,41 @@ async function findNsuids(gameUrl, emit) {
     if (!allCandidates.length) return;
 
     const ranked = allCandidates
-      .map(id => ({ id, gap: baseBigInts.reduce((min, b) => { const d = b > BigInt(id) ? b - BigInt(id) : BigInt(id) - b; return d < min ? d : min; }, maxGap + 1n) }))
+      .map(({ id, name }) => ({ id, name, gap: baseBigInts.reduce((min, b) => { const d = b > BigInt(id) ? b - BigInt(id) : BigInt(id) - b; return d < min ? d : min; }, maxGap + 1n) }))
       .filter(x => x.gap <= maxGap)
       .sort((a, b) => (a.gap < b.gap ? -1 : a.gap > b.gap ? 1 : 0))
       .slice(0, 10);
-    emit(`${cc} probe: ranked=[${ranked.map(r => `${r.id}(gap${r.gap})`).join(',')}] kws=[${probeKeywords.join(',')}]`);
+    emit(`${cc} probe: ranked=[${ranked.map(r => `${r.id}(gap${r.gap},"${r.name.slice(0,20)}")`).join(', ')}]`);
 
-    const ecPath = cc === 'HK' ? 'HK/zh' : cc === 'JP' ? 'JP/ja' : 'SG//';
-    const verified = await Promise.allSettled(ranked.map(async ({ id, gap }) => {
-      try {
-        const pageRes = await axios.get(`https://ec.nintendo.com/${ecPath}/titles/${id}`, {
-          timeout: 8000,
-          headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': `${lang},en;q=0.8` },
-        });
-        const titleTag = (String(pageRes.data).match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '').toLowerCase();
-        const kwMatch = probeKeywords.some(kw => titleTag.includes(kw));
-        emit(`${cc} verify ${id}: title="${titleTag.slice(0, 60)}" kwMatch=${kwMatch}`);
-        return { id, gap, kwMatch };
-      } catch (e) {
-        emit(`${cc} verify ${id}: error ${e.message.slice(0, 40)}`);
-        return { id, gap, kwMatch: false };
-      }
-    }));
+    // Verify using formal_name from the price API (no extra HTTP calls)
+    const withVerification = ranked.map(({ id, name, gap }) => {
+      const kwMatch = name.length > 0 && probeKeywords.some(kw => name.includes(kw));
+      return { id, gap, kwMatch, name };
+    });
+    emit(`${cc} kws=[${probeKeywords.join(',')}]`);
 
-    const verifiedHits = verified.filter(r => r.status === 'fulfilled' && r.value.kwMatch).map(r => r.value);
-    // Proximity fallback only when there is exactly ONE unverified candidate (avoids picking
-    // the wrong game when multiple near-gap competitors all fail title verification).
-    const closeUnverified = verified.filter(r => r.status === 'fulfilled' && !r.value.kwMatch && r.value.gap <= 3n).map(r => r.value);
-    const proximityOnly = closeUnverified.length === 1 ? closeUnverified : [];
+    const verifiedHits = withVerification.filter(r => r.kwMatch);
+    // Proximity fallback: only when there is exactly ONE candidate at gap ≤ 3 and it has
+    // no formal_name (API didn't return one). Multiple competing near-gap candidates need
+    // verification to avoid picking the wrong game.
+    const closeUnnamed = withVerification.filter(r => !r.kwMatch && !r.name && r.gap <= 3n);
+    const proximityOnly = closeUnnamed.length === 1 ? closeUnnamed : [];
     const best = [...verifiedHits, ...proximityOnly].sort((a, b) => (a.gap < b.gap ? -1 : a.gap > b.gap ? 1 : 0))[0];
     if (best) {
       add(best.id);
-      emit(`${cc} probe: accepted ${best.id} (gap ${best.gap}, verified=${best.kwMatch})`);
+      emit(`${cc} probe: accepted ${best.id} (gap ${best.gap}, name="${best.name}", verified=${best.kwMatch})`);
     } else {
-      emit(`${cc} probe: no nsuid accepted (verified=${verifiedHits.length}, closeUnverified=${closeUnverified.length})`);
+      emit(`${cc} probe: no nsuid accepted (verified=${verifiedHits.length}, closeUnnamed=${closeUnnamed.length})`);
     }
   }
 
-  // JP: probe around US nsuid when it's numerically close to EU primary (same game family).
-  // If usNsuid is very far from EU primary it's likely a different edition returned by
-  // Algolia — fall back to EU-based probe to avoid probing the wrong nsuid range.
-  const JP_US_TRUST_RANGE = 10000n;
-  const usClose = usNsuid && euPrimaryIds.length
-    ? euBigInts.some(eu => { const d = eu > BigInt(usNsuid) ? eu - BigInt(usNsuid) : BigInt(usNsuid) - eu; return d <= JP_US_TRUST_RANGE; })
-    : !!usNsuid;
-  const jpBase = (usNsuid && usClose) ? [usNsuid] : euPrimaryIds;
-  emit(`JP probe base: ${jpBase.join(',')} (usClose=${usClose})`);
+  // JP: probe ±10 around US nsuid (or EU anchor when no usNsuid available)
+  const jpBase = usNsuid ? [usNsuid] : euPrimaryIds;
+  emit(`JP probe base: ${jpBase.join(',')}`);
   const jpBigInts = jpBase.map(id => BigInt(id));
   const jpProbeIds = buildProbeSet(jpBase, JP_GAP);
 
-  // HK: probe around EU primary nsuids
+  // HK: probe ±50 around EU anchor nsuids
   const hkProbeIds = buildProbeSet(euPrimaryIds, HK_GAP);
 
   await Promise.allSettled([

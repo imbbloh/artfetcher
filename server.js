@@ -448,7 +448,7 @@ async function getNintendoPrices(nsuids, emit) {
 function buildResultData(gameName, prices, rateResult) {
   const { rates: sgdRates, source: rateSource } = rateResult;
   const cnyToSgd = sgdRates['CNY'] ?? null;
-  if (cnyToSgd == null) console.warn('buildResultData: CNY rate missing — gift card pricing unavailable, falling back to live rates');
+  console.log(`[gc] cnyToSgd=${cnyToSgd} gcPrices=${JSON.stringify(gcPrices)}`);
 
   function formatRaw(amount, currency) {
     const sym = { USD: 'US$', SGD: 'S$', HKD: 'HK$', BRL: 'R$', JPY: '¥', CAD: 'CA$', MXN: 'MX$', AUD: 'A$' };

@@ -298,6 +298,24 @@ async function findNsuidsPhase1(gameUrl, emit) {
         } catch (e) { emit(`Asia catalog (${locale}): ${e.message.slice(0, 50)}`); }
       }
     })(),
+    // Nintendo Japan catalog — JP nsuids are far from US/EU, can't be found by probing
+    (async () => {
+      for (const endpoint of [
+        `https://searching.nintendo.co.jp/j01/select?q=${q}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
+        `https://searching.nintendo-asia.com/ja_JP/select?q=${q}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
+      ]) {
+        try {
+          const res = await axios.get(endpoint, { timeout: 10000 });
+          const docs = res.data?.response?.docs || [];
+          if (!docs.length) continue;
+          const before = nsuids.length;
+          const ids = [];
+          for (const d of docs.slice(0, 5)) for (const id of (d.nsuid_txt || [])) { add(id); ids.push(id); }
+          emit(`JP catalog: +${nsuids.length - before} nsuid(s) [${ids.join(',')}]`);
+          break;
+        } catch (e) { emit(`JP catalog (${endpoint.includes('co.jp') ? 'co.jp' : 'asia'}): ${e.message.slice(0, 50)}`); }
+      }
+    })(),
     getAlgoliaKey(emit),
   ]);
 

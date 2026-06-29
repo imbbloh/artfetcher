@@ -365,10 +365,10 @@ async function findNsuidsPhase1(gameUrl, emit) {
 
   if (!gameName) gameName = slug;
 
-  // Prefer 7001 nsuid as usNsuid for ec.nintendo.com links and JP probing anchor.
-  // 7007 nsuids (from Algolia) DO work in the price API, so keep them in the query.
-  // Only override usNsuid with 7001 if a better anchor is available.
-  const amer7001 = nsuids.filter(id => id.startsWith('7001'));
+  // Prefer a non-EU 7001 nsuid as usNsuid (Americas eShop, correct anchor for JP probing).
+  // Exclude EU catalog nsuids — they are AU/EU region IDs, not US.
+  const euNsuidSet = new Set(euNsuids);
+  const amer7001 = nsuids.filter(id => id.startsWith('7001') && !euNsuidSet.has(id));
   if (amer7001.length && (!usNsuid || !usNsuid.startsWith('7001'))) {
     usNsuid = amer7001[0];
     emit(`usNsuid: overriding with 7001 nsuid ${usNsuid}`);
@@ -459,11 +459,10 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, usNsuid }, 
   const jpBase = usNsuid ? [usNsuid] : euPrimary;
   const hkBase = euPrimary;
 
+  // Probes are fast (~1-2s). Run them first so JP/HK results aren't delayed by the browser.
   await Promise.allSettled([
     probeRegion('JP', 'ja', buildProbeIds(jpBase, JP_GAP), jpBase.map(BigInt), JP_GAP),
     probeRegion('HK', 'zh', buildProbeIds(hkBase, HK_GAP), euBigInts, HK_GAP),
-    // eshop-prices.com browser (if input URL is from that site — runs in parallel with probe)
-    fetchNsuidsFromEshopPricesBrowser(gameUrl, emit).then(ids => ids.forEach(addNew)),
   ]);
 
   emit(`Phase 2 done: ${newNsuids.length} additional nsuid(s)`);
@@ -568,18 +567,26 @@ async function buildResults(gameUrl, emit, onPartial) {
   const partialData = buildResultData(phase1.gameName, p1Prices, rateResult);
   if (onPartial) onPartial(partialData);
 
-  // Phase 2: probe + browser in background
-  const extraNsuids = await findNsuidsPhase2(gameUrl, phase1, emit);
-  if (!extraNsuids.length) {
-    cache.set(gameUrl, { data: partialData, time: Date.now() });
-    return partialData;
-  }
+  // Phase 2: fast probes (JP/HK) — completes in ~2s
+  const probeNsuids = await findNsuidsPhase2(gameUrl, phase1, emit);
+  const p2Nsuids = [...phase1.nsuids, ...probeNsuids];
+  const p2Prices = await getNintendoPrices(p2Nsuids, emit);
+  const p2Data = buildResultData(phase1.gameName, p2Prices, rateResult);
+  cache.set(gameUrl, { data: p2Data, time: Date.now() });
 
-  const allNsuids = [...phase1.nsuids, ...extraNsuids];
-  const p2Prices = await getNintendoPrices(allNsuids, emit);
-  const fullData = buildResultData(phase1.gameName, p2Prices, rateResult);
-  cache.set(gameUrl, { data: fullData, time: Date.now() });
-  return fullData;
+  // Phase 3: browser (slow, may hit Cloudflare) — runs in background, only updates cache
+  // No callback here — browser result is available on next lookup via cache
+  fetchNsuidsFromEshopPricesBrowser(gameUrl, emit).then(async (browserIds) => {
+    const newFromBrowser = browserIds.filter(id => !phase1.seen.has(id) && !probeNsuids.includes(id));
+    if (!newFromBrowser.length) { emit('Browser: no new nsuids'); return; }
+    emit(`Browser: +${newFromBrowser.length} new nsuid(s), updating cache`);
+    const p3Nsuids = [...p2Nsuids, ...newFromBrowser];
+    const p3Prices = await getNintendoPrices(p3Nsuids, emit);
+    const p3Data = buildResultData(phase1.gameName, p3Prices, rateResult);
+    cache.set(gameUrl, { data: p3Data, time: Date.now() });
+  }).catch(() => {});
+
+  return p2Data;
 }
 
 // ─── Web: SSE endpoint ────────────────────────────────────────────────────────

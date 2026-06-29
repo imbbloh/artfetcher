@@ -201,7 +201,7 @@ async function fetchNsuidsFromEshopPricesBrowser(gameUrl, emit) {
   emit('Browser: loading eshop-prices.com...');
   let browser;
   try {
-    browser = await chromium.launch({ executablePath: findChromiumExecutable(), headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] });
+    browser = await chromium.launch({ executablePath: findChromiumExecutable(), headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-extensions', '--disable-background-networking', '--disable-default-apps', '--no-first-run', '--single-process'] });
     const page = await browser.newPage();
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
     const found = new Set();
@@ -237,7 +237,7 @@ async function fetchNsuidsFromDekuDealsBrowser(gameUrl, emit) {
   emit('DekuDeals browser: loading page...');
   let browser;
   try {
-    browser = await chromium.launch({ executablePath: findChromiumExecutable(), headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'] });
+    browser = await chromium.launch({ executablePath: findChromiumExecutable(), headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-extensions', '--disable-background-networking', '--disable-default-apps', '--no-first-run', '--single-process'] });
     const page = await browser.newPage();
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
     await page.goto(gameUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });

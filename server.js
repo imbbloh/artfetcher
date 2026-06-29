@@ -278,6 +278,20 @@ async function findNsuidsPhase1(gameUrl, emit) {
         emit(`EU catalog: +${nsuids.length - before} nsuid(s) [${euIds.join(',')}]`);
       } catch (e) { emit(`EU catalog: ${e.message.slice(0, 60)}`); }
     })(),
+    // Nintendo Asia catalog (covers HK and SG nsuids)
+    (async () => {
+      for (const locale of ['en_SG', 'zh_HK']) {
+        try {
+          const res = await axios.get(`https://searching.nintendo-asia.com/${locale}/select?q=${q}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`, { timeout: 10000 });
+          const docs = res.data?.response?.docs || [];
+          const scored = docs.map(d => ({ d, score: words.filter(w => (d.title || '').toLowerCase().includes(w)).length })).sort((a, b) => b.score - a.score);
+          const before = nsuids.length;
+          const ids = [];
+          for (const { d } of scored.slice(0, 5)) for (const id of (d.nsuid_txt || [])) { add(id); ids.push(id); }
+          emit(`Asia catalog (${locale}): +${nsuids.length - before} nsuid(s) [${ids.join(',')}]`);
+        } catch (e) { emit(`Asia catalog (${locale}): ${e.message.slice(0, 50)}`); }
+      }
+    })(),
     getAlgoliaKey(emit),
   ]);
 

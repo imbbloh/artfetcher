@@ -664,10 +664,12 @@ function startTelegramBot() {
 
   function escGc(s) { return String(s).replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&'); }
 
+  const GC_FLAG = { USD: '🇺🇸', BRL: '🇧🇷', CAD: '🇨🇦', MXN: '🇲🇽', AUD: '🇦🇺' };
+
   function formatGcPrices() {
     const lines = ['🎴 *Gift Card Prices* \\(CNY\\)\n'];
     for (const cur of GC_CURRENCIES) {
-      lines.push(`*${cur}*`);
+      lines.push(`${GC_FLAG[cur] || ''} *${cur}*`);
       for (const [denom, cny] of Object.entries(gcPrices[cur])) {
         lines.push(cny != null
           ? `  ${cur} ${denom} → *${escGc(cny)} CNY*`

@@ -818,7 +818,7 @@ function startTelegramBot() {
       await bot.sendMessage(chatId, formatGcPrices(), { parse_mode: 'MarkdownV2' });
 
     } else if (/^\/updategiftcard\b/.test(text)) {
-      // /updategiftcard USD 10 60  or  /updategiftcard BRL 30 40.9
+      // /updategiftcard USD 10 60  — update an existing denomination
       const m = text.match(/^\/updategiftcard\s+([A-Z]{3})\s+([\d.]+)\s+([\d.]+)/i);
       if (!m) {
         await bot.sendMessage(chatId,
@@ -840,14 +840,45 @@ function startTelegramBot() {
       saveGcPrices();
       cache.clear();
       await bot.sendMessage(chatId,
-        `✅ *${cur} ${denom}* gift card set to *${escGc(cny)} CNY*\\.\nPrice caches cleared\\.`,
+        `✅ *${cur} ${denom}* gift card updated to *${escGc(cny)} CNY*\\.\nPrice caches cleared\\.`,
+        { parse_mode: 'MarkdownV2' });
+
+    } else if (/^\/addgiftcard\b/.test(text)) {
+      // /addgiftcard USD 25 150  — add a new denomination
+      const m = text.match(/^\/addgiftcard\s+([A-Z]{3})\s+([\d.]+)\s+([\d.]+)/i);
+      if (!m) {
+        await bot.sendMessage(chatId,
+          '⚠️ Usage: `/addgiftcard USD 25 150`\n_currency · denomination · CNY price_\nSupported: ' + escGc(GC_CURRENCIES.join(', ')),
+          { parse_mode: 'MarkdownV2' });
+        return;
+      }
+      const cur = m[1].toUpperCase();
+      const denom = m[2];
+      const cny = parseFloat(m[3]);
+      if (!(cur in gcPrices) || isNaN(cny) || cny <= 0) {
+        await bot.sendMessage(chatId,
+          `⚠️ Unsupported currency\\. Supported: ${escGc(GC_CURRENCIES.join(', '))}`,
+          { parse_mode: 'MarkdownV2' });
+        return;
+      }
+      if (denom in gcPrices[cur]) {
+        await bot.sendMessage(chatId,
+          `⚠️ *${cur} ${denom}* already exists\\. Use \`/updategiftcard ${cur} ${denom} ${cny}\` to change it\\.`,
+          { parse_mode: 'MarkdownV2' });
+        return;
+      }
+      gcPrices[cur][denom] = cny;
+      saveGcPrices();
+      cache.clear();
+      await bot.sendMessage(chatId,
+        `✅ *${cur} ${denom}* gift card added at *${escGc(cny)} CNY*\\.\nPrice caches cleared\\.`,
         { parse_mode: 'MarkdownV2' });
 
     } else if (/^\/start|\/help/.test(text)) {
       await bot.sendMessage(chatId,
         '👋 Send me a game link and I\'ll show you the best prices in SGD\\.\n\n' +
         '*Supported URLs:*\n• eshop\\-prices\\.com/games/\\.\\.\\.\n• dekudeals\\.com/items/\\.\\.\\.\n• nintendo\\.com/\\*/store/products/\\.\\.\\.\n\n' +
-        '*Gift card commands:*\n• `/giftcards` — view all current CNY prices\n• `/updategiftcard USD 10 60` — set CNY price for a denomination\n\n' +
+        '*Gift card commands:*\n• `/giftcards` — view all current CNY prices\n• `/updategiftcard USD 10 60` — update an existing denomination\n• `/addgiftcard USD 25 150` — add a new denomination\n\n' +
         '*Example:*\n`https://eshop\\-prices\\.com/games/17496\\-cyberpunk\\-2077\\-ultimate\\-edition`',
         { parse_mode: 'MarkdownV2' }
       );

@@ -362,6 +362,20 @@ async function findNsuidsPhase1(gameUrl, emit) {
         } catch (e) { emit(`JP catalog (${endpoint.includes('co.jp') ? 'co.jp' : 'asia'}): ${e.message.slice(0, 50)}`); }
       }
     })(),
+    // store-jp.nintendo.com search — NSUIDs appear directly in product URLs as D{nsuid}
+    // Most reliable JP source: works even when catalog keyword match fails for non-English titles
+    (async () => {
+      try {
+        const res = await axios.get(`https://store-jp.nintendo.com/search/?q=${q}&genre=Game`, {
+          timeout: 10000,
+          headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'ja,en;q=0.9' },
+        });
+        const ids = [...new Set((String(res.data).match(/D(700[0-9]\d{10})/g) || []).map(m => m.slice(1)))];
+        const before = nsuids.length;
+        for (const id of ids) { add(id); jpNsuids.push(id); }
+        emit(`JP store search: +${nsuids.length - before} nsuid(s) [${ids.join(',')}]`);
+      } catch (e) { emit(`JP store search: ${e.message.slice(0, 60)}`); }
+    })(),
     getAlgoliaKey(emit),
   ]);
 

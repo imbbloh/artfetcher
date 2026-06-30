@@ -714,21 +714,25 @@ async function buildResults(gameUrl, emit, onPartial) {
     finalName = title || phase1.gameName;
     emit(`DekuDeals: ${browserIds.length} new nsuid(s) from browser`);
   } else {
-    // Phase 2: fast probes (JP/HK/SG) + DekuDeals browser run in parallel.
-    // DekuDeals embeds ec.nintendo.com/{CC}/.../titles/{nsuid} for every region including JP —
-    // the only reliable JP source when the JP title is in Japanese and catalog search fails.
+    // Phase 2: fast probes (JP/HK) — completes in ~2s
+    const probeNsuids = await findNsuidsPhase2(gameUrl, phase1, emit);
+    finalNsuids = [...phase1.nsuids, ...probeNsuids];
+    finalName = phase1.gameName;
+    // Phase 3: DekuDeals browser only (eshop-prices always 403s on Render).
+    // DekuDeals passes Cloudflare and embeds SG/HK/JP regional ec.nintendo.com links.
+    // Only ONE browser at a time to stay within Render's memory limit.
     const p3Slug = phase1.rawSlug || extractSlugFromUrl(gameUrl);
     const dekuUrl = `https://www.dekudeals.com/items/${p3Slug}`;
-    const [probeNsuids, { regionMap: dekuRegionMap, title: dekuTitle }] = await Promise.all([
-      findNsuidsPhase2(gameUrl, phase1, emit),
-      fetchNsuidsFromDekuDealsBrowser(dekuUrl, emit),
-    ]);
-
-    const dekuIds = Object.values(dekuRegionMap).filter(id => !phase1.seen.has(id) && !probeNsuids.includes(id));
-    emit(`DekuDeals: ${dekuIds.length} new nsuid(s) [${Object.entries(dekuRegionMap).map(([cc, id]) => `${cc}:${id}`).join(', ')}]`);
-
-    finalNsuids = [...phase1.nsuids, ...probeNsuids, ...dekuIds];
-    finalName = dekuTitle || phase1.gameName;
+    fetchNsuidsFromDekuDealsBrowser(dekuUrl, emit).then(async ({ regionMap }) => {
+      const allNew = Object.values(regionMap)
+        .filter(id => /^700[0-9]\d{10}$/.test(id) && !phase1.seen.has(id) && !probeNsuids.includes(id));
+      if (!allNew.length) { emit('DekuDeals Phase 3: no new nsuids'); return; }
+      emit(`DekuDeals Phase 3: +${allNew.length} new nsuid(s), updating cache`);
+      const p3Nsuids = [...finalNsuids, ...allNew];
+      const p3Prices = await getNintendoPrices(p3Nsuids, emit);
+      const p3Data = buildResultData(finalName, p3Prices, rateResult);
+      cache.set(gameUrl, { data: p3Data, time: Date.now() });
+    }).catch(() => {});
   }
 
   const p2Prices = await getNintendoPrices(finalNsuids, emit);

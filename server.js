@@ -91,6 +91,11 @@ let algoliaKeyCache = { key: null, time: 0 };
 const ALGOLIA_KEY_TTL = 12 * 60 * 60 * 1000;
 const ALGOLIA_APP_ID = 'U3B6GR4UA3';
 
+// JP XML catalog cache — refreshed hourly
+// Maps lowercase title → nsuid (14-digit string)
+let jpXmlCache = { map: null, time: 0 };
+const JP_XML_TTL = 60 * 60 * 1000;
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 app.use(express.static(path.join(__dirname, 'public')));
@@ -182,6 +187,89 @@ async function getAlgoliaKey(emit) {
     }
   } catch (e) { emit(`Algolia scan: ${e.message.slice(0, 60)}`); }
   return algoliaKeyCache.key;
+}
+
+// ─── JP XML catalog ───────────────────────────────────────────────────────────
+// Nintendo publishes a full list of on-sale JP Switch titles as XML.
+// We cache it for 1 hour and fuzzy-match by title to resolve JP NSUIDs.
+
+async function getJpXmlCatalog(emit) {
+  const now = Date.now();
+  if (jpXmlCache.map && now - jpXmlCache.time < JP_XML_TTL) return jpXmlCache.map;
+
+  const urls = [
+    'https://www.nintendo.co.jp/data/software/xml-system/switch-onsale.xml',
+    'https://www.nintendo.co.jp/data/software/xml-system/switch-coming.xml',
+  ];
+
+  const map = new Map(); // lowercase title → nsuid
+  let fetched = 0;
+
+  for (const url of urls) {
+    try {
+      const res = await axios.get(url, {
+        timeout: 15000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Accept': 'text/xml,application/xml,*/*',
+          'Accept-Language': 'ja,en;q=0.9',
+          'Referer': 'https://www.nintendo.co.jp/',
+        },
+      });
+      const xml = String(res.data);
+      // Each entry looks like: <title>ゲームタイトル</title> ... <nsuid>70010000012345</nsuid>
+      // or: <TitleName>Title</TitleName> ... <InitialCode>HAC...</InitialCode>
+      // Parse both title+nsuid pairs and TitleName+nsuid pairs
+      const titleNsuidPairs = [];
+      // Pattern 1: <title>...</title> followed by <nsuid>...</nsuid> within ~500 chars
+      const p1 = /<title[^>]*>([^<]+)<\/title>[\s\S]{0,500}?<nsuid>(\d{14})<\/nsuid>/gi;
+      let m;
+      while ((m = p1.exec(xml)) !== null) titleNsuidPairs.push([m[1].trim(), m[2]]);
+      // Pattern 2: <nsuid>...</nsuid> followed by <title>...</title>
+      const p2 = /<nsuid>(\d{14})<\/nsuid>[\s\S]{0,500}?<title[^>]*>([^<]+)<\/title>/gi;
+      while ((m = p2.exec(xml)) !== null) titleNsuidPairs.push([m[2].trim(), m[1]]);
+      // Pattern 3: <TitleName>...</TitleName> near <nsuid>
+      const p3 = /<TitleName[^>]*>([^<]+)<\/TitleName>[\s\S]{0,500}?<nsuid>(\d{14})<\/nsuid>/gi;
+      while ((m = p3.exec(xml)) !== null) titleNsuidPairs.push([m[1].trim(), m[2]]);
+
+      for (const [title, nsuid] of titleNsuidPairs) {
+        if (/^700[0-9]\d{10}$/.test(nsuid)) map.set(title.toLowerCase(), nsuid);
+      }
+      fetched += titleNsuidPairs.length;
+      emit(`JP XML (${url.includes('coming') ? 'coming' : 'onsale'}): ${titleNsuidPairs.length} entries parsed`);
+    } catch (e) {
+      emit(`JP XML catalog: ${e.response?.status || e.code || e.message.slice(0, 50)}`);
+    }
+  }
+
+  if (map.size > 0) {
+    jpXmlCache = { map, time: now };
+    emit(`JP XML catalog: ${map.size} titles cached`);
+  }
+  return map;
+}
+
+// Find the best-matching JP NSUID from the XML catalog for a given English/Japanese query.
+// Uses word-overlap scoring; returns nsuid string or null.
+function matchJpXmlTitle(catalogMap, query) {
+  if (!catalogMap || catalogMap.size === 0) return null;
+  const qLower = query.toLowerCase();
+  // Exact match first
+  if (catalogMap.has(qLower)) return catalogMap.get(qLower);
+  // Tokenize query into significant words (length ≥ 2)
+  const qWords = qLower.replace(/[™®©:！？。、]/g, ' ').split(/\s+/).filter(w => w.length >= 2);
+  if (!qWords.length) return null;
+
+  let best = null, bestScore = 0;
+  for (const [title, nsuid] of catalogMap) {
+    const tWords = title.replace(/[™®©:！？。、]/g, ' ').split(/\s+/).filter(w => w.length >= 2);
+    // Count matching words in both directions (title contains query words AND query contains title words)
+    const fwd = qWords.filter(w => title.includes(w)).length / qWords.length;
+    const rev = tWords.filter(w => qLower.includes(w)).length / Math.max(tWords.length, 1);
+    const score = (fwd + rev) / 2;
+    if (score > bestScore && score >= 0.5) { bestScore = score; best = nsuid; }
+  }
+  return best;
 }
 
 // ─── Nsuid fetch helpers ──────────────────────────────────────────────────────
@@ -412,6 +500,15 @@ async function findNsuidsPhase1(gameUrl, emit) {
       }
     })(),
     getAlgoliaKey(emit),
+    // JP XML catalog — fetch all on-sale JP titles in parallel with other searches
+    (async () => {
+      try {
+        const xmlMap = await getJpXmlCatalog(emit);
+        const nsuid = matchJpXmlTitle(xmlMap, slug);
+        if (nsuid) { add(nsuid); jpNsuids.push(nsuid); emit(`JP XML match (P1): nsuid=${nsuid}`); }
+        else emit(`JP XML match (P1): no match for "${slug.slice(0, 30)}" — will retry in Phase 2`);
+      } catch (e) { emit(`JP XML: ${e.message.slice(0, 50)}`); }
+    })(),
   ]);
 
   const nameSlug = toNintendoSlug(gameName || slug);
@@ -549,32 +646,52 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
     }
   }
 
-  // JP: search JP catalog + store-jp with Japanese title from Phase 1.
-  // Falls back to store-jp search with English title when catalog is unreachable.
+  // JP: multiple strategies in parallel — XML catalog, store-jp search, JP Solr catalog
   async function findJP() {
-    const searchQuery = jpLocalTitle || gameName;
-    const label = jpLocalTitle ? `JA: "${jpLocalTitle.slice(0, 20)}"` : `EN: "${gameName.slice(0, 20)}"`;
-    const q = encodeURIComponent(searchQuery);
+    const queries = jpLocalTitle ? [jpLocalTitle, gameName] : [gameName];
 
-    // store-jp: NSUIDs in D{nsuid} links — accessible from Render
-    try {
-      const res = await axios.get(`https://store-jp.nintendo.com/search/?q=${q}&genre=Game`, {
-        timeout: 10000,
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept-Language': 'ja,en;q=0.9' },
-      });
-      const ids = [...new Set((String(res.data).match(/D(700[0-9]\d{10})/g) || []).map(m => m.slice(1)))];
-      emit(`JP store search (${label}): ${ids.length} nsuid(s)${ids.length ? ` [${ids.join(',')}]` : ''}`);
-      ids.forEach(addNew);
-    } catch (e) { emit(`JP store search: ${e.message.slice(0, 60)}`); }
+    await Promise.all([
+      // Strategy A: JP XML catalog (cached hourly from nintendo.co.jp)
+      (async () => {
+        try {
+          const xmlMap = await getJpXmlCatalog(emit);
+          for (const q of queries) {
+            const nsuid = matchJpXmlTitle(xmlMap, q);
+            if (nsuid) { addNew(nsuid); emit(`JP XML match (P2, query="${q.slice(0, 25)}"): nsuid=${nsuid}`); return; }
+          }
+          emit(`JP XML match (P2): no match for [${queries.map(q => q.slice(0, 20)).join(' / ')}]`);
+        } catch (e) { emit(`JP XML (P2): ${e.message.slice(0, 50)}`); }
+      })(),
 
-    // JP catalog — only try if endpoint is reachable (may be blocked on Render)
-    if (jpLocalTitle) {
-      const { ids } = await searchCatalog(
-        `https://searching.nintendo.co.jp/j01/select?q=${q}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
-        `JP catalog (${label})`
-      );
-      ids.forEach(addNew);
-    }
+      // Strategy B: store-jp.nintendo.com HTML search
+      (async () => {
+        for (const searchQuery of queries) {
+          const q = encodeURIComponent(searchQuery);
+          const label = searchQuery === jpLocalTitle ? `JA: "${searchQuery.slice(0, 20)}"` : `EN: "${searchQuery.slice(0, 20)}"`;
+          try {
+            const res = await axios.get(`https://store-jp.nintendo.com/search/?q=${q}&genre=Game`, {
+              timeout: 10000,
+              headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept-Language': 'ja,en;q=0.9' },
+            });
+            const ids = [...new Set((String(res.data).match(/D(700[0-9]\d{10})/g) || []).map(m => m.slice(1)))];
+            emit(`JP store search (${label}): ${ids.length} nsuid(s)${ids.length ? ` [${ids.join(',')}]` : ''}`);
+            if (ids.length) { ids.forEach(addNew); return; }
+          } catch (e) { emit(`JP store search (${label}): ${e.message.slice(0, 60)}`); }
+        }
+      })(),
+
+      // Strategy C: Nintendo JP Solr catalog (may be blocked on Render but worth trying)
+      (async () => {
+        for (const searchQuery of queries) {
+          const q = encodeURIComponent(searchQuery);
+          const { ids } = await searchCatalog(
+            `https://searching.nintendo.co.jp/j01/select?q=${q}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
+            `JP catalog ("${searchQuery.slice(0, 20)}")`
+          );
+          if (ids.length) { ids.forEach(addNew); return; }
+        }
+      })(),
+    ]);
   }
 
   // SG: gap probe off HK nsuids, chunked to avoid 400 errors

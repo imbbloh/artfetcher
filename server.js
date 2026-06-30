@@ -217,31 +217,37 @@ async function getJpXmlCatalog(emit) {
         },
       });
       const xml = String(res.data);
-      // Nintendo JP XML uses <TitleName> + <LinkURL>...D{nsuid}... per <TitleInfo> block.
-      // Also try legacy <title>+<nsuid> and <nsuid>+<title> patterns as fallback.
       const titleNsuidPairs = [];
       let m;
-      // Pattern A (primary): <TitleName>...</TitleName> ... <LinkURL>...D{nsuid}...</LinkURL>
-      const pA = /<TitleName[^>]*>([\s\S]+?)<\/TitleName>[\s\S]{0,800}?<LinkURL>[^<]*D(700[0-9]\d{10})[^<]*<\/LinkURL>/gi;
+      // Pattern A: <TitleName> + <LinkURL>...D{nsuid}...  (coming XML schema)
+      const pA = /<TitleName[^>]*>([\s\S]+?)<\/TitleName>[\s\S]{0,800}?<LinkUrl[^>]*>[^<]*D(700[0-9]\d{10})[^<]*<\/LinkUrl>/gi;
       while ((m = pA.exec(xml)) !== null) titleNsuidPairs.push([m[1].trim(), m[2]]);
-      // Pattern B: <TitleName> near <nsuid> tag (alternate schema)
-      const pB = /<TitleName[^>]*>([\s\S]+?)<\/TitleName>[\s\S]{0,500}?<nsuid>(\d{14})<\/nsuid>/gi;
+      // Pattern B: <TitleName> near bare <nsuid> tag
+      const pB = /<TitleName[^>]*>([\s\S]+?)<\/TitleName>[\s\S]{0,800}?<(?:nsuid|Nsuid|NsuidTxt)[^>]*>(\d{14})<\/(?:nsuid|Nsuid|NsuidTxt)>/gi;
       while ((m = pB.exec(xml)) !== null) titleNsuidPairs.push([m[1].trim(), m[2]]);
       // Pattern C: <title> near <nsuid>
-      const pC = /<title[^>]*>([^<]+)<\/title>[\s\S]{0,500}?<nsuid>(\d{14})<\/nsuid>/gi;
+      const pC = /<title[^>]*>([^<]+)<\/title>[\s\S]{0,800}?<(?:nsuid|NsuidTxt)[^>]*>(\d{14})<\/(?:nsuid|NsuidTxt)>/gi;
       while ((m = pC.exec(xml)) !== null) titleNsuidPairs.push([m[1].trim(), m[2]]);
-      // Pattern D: any D{nsuid} anywhere (last resort — log count only)
-      const allIds = [...new Set((xml.match(/D(700[0-9]\d{10})/g) || []).map(x => x.slice(1)))];
-      if (!titleNsuidPairs.length && allIds.length) {
-        emit(`JP XML (${url.includes('coming') ? 'coming' : 'onsale'}): 0 title pairs but ${allIds.length} D-prefixed nsuids — XML schema unknown, logging sample: ${xml.slice(0, 300)}`);
+      // Pattern D: any bare 14-digit nsuid in XML paired with nearest TitleName (onsale schema)
+      // Split on TitleInfo blocks and extract both TitleName and any 14-digit number starting 7001
+      const blocks = xml.split(/<\/?TitleInfo[^>]*>/i);
+      for (let i = 0; i < blocks.length; i++) {
+        const block = blocks[i];
+        const titleM = block.match(/<TitleName[^>]*>([\s\S]+?)<\/TitleName>/i);
+        const nsuidM = block.match(/\b(700[0-9]\d{10})\b/);
+        if (titleM && nsuidM) titleNsuidPairs.push([titleM[1].trim(), nsuidM[1]]);
+      }
+
+      const allNsuids = [...new Set((xml.match(/\b(700[0-9]\d{10})\b/g) || []))];
+      if (!titleNsuidPairs.length) {
+        emit(`JP XML (${url.includes('coming') ? 'coming' : 'onsale'}): 0 pairs — sample: ${xml.slice(0, 400).replace(/\n/g, ' ')}`);
       }
 
       for (const [title, nsuid] of titleNsuidPairs) {
         if (/^700[0-9]\d{10}$/.test(nsuid)) map.set(title.toLowerCase(), nsuid);
       }
-      fetched += titleNsuidPairs.length;
       const label = url.includes('coming') ? 'coming' : 'onsale';
-      emit(`JP XML (${label}): ${titleNsuidPairs.length} title-nsuid pairs, ${allIds.length} D-nsuids in raw XML, size=${xml.length}`);
+      emit(`JP XML (${label}): ${titleNsuidPairs.length} title-nsuid pairs, ${allNsuids.length} nsuids in XML, size=${xml.length}`);
     } catch (e) {
       emit(`JP XML catalog: ${e.response?.status || e.code || e.message.slice(0, 50)}`);
     }

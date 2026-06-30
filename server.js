@@ -217,26 +217,31 @@ async function getJpXmlCatalog(emit) {
         },
       });
       const xml = String(res.data);
-      // Each entry looks like: <title>ゲームタイトル</title> ... <nsuid>70010000012345</nsuid>
-      // or: <TitleName>Title</TitleName> ... <InitialCode>HAC...</InitialCode>
-      // Parse both title+nsuid pairs and TitleName+nsuid pairs
+      // Nintendo JP XML uses <TitleName> + <LinkURL>...D{nsuid}... per <TitleInfo> block.
+      // Also try legacy <title>+<nsuid> and <nsuid>+<title> patterns as fallback.
       const titleNsuidPairs = [];
-      // Pattern 1: <title>...</title> followed by <nsuid>...</nsuid> within ~500 chars
-      const p1 = /<title[^>]*>([^<]+)<\/title>[\s\S]{0,500}?<nsuid>(\d{14})<\/nsuid>/gi;
       let m;
-      while ((m = p1.exec(xml)) !== null) titleNsuidPairs.push([m[1].trim(), m[2]]);
-      // Pattern 2: <nsuid>...</nsuid> followed by <title>...</title>
-      const p2 = /<nsuid>(\d{14})<\/nsuid>[\s\S]{0,500}?<title[^>]*>([^<]+)<\/title>/gi;
-      while ((m = p2.exec(xml)) !== null) titleNsuidPairs.push([m[2].trim(), m[1]]);
-      // Pattern 3: <TitleName>...</TitleName> near <nsuid>
-      const p3 = /<TitleName[^>]*>([^<]+)<\/TitleName>[\s\S]{0,500}?<nsuid>(\d{14})<\/nsuid>/gi;
-      while ((m = p3.exec(xml)) !== null) titleNsuidPairs.push([m[1].trim(), m[2]]);
+      // Pattern A (primary): <TitleName>...</TitleName> ... <LinkURL>...D{nsuid}...</LinkURL>
+      const pA = /<TitleName[^>]*>([\s\S]+?)<\/TitleName>[\s\S]{0,800}?<LinkURL>[^<]*D(700[0-9]\d{10})[^<]*<\/LinkURL>/gi;
+      while ((m = pA.exec(xml)) !== null) titleNsuidPairs.push([m[1].trim(), m[2]]);
+      // Pattern B: <TitleName> near <nsuid> tag (alternate schema)
+      const pB = /<TitleName[^>]*>([\s\S]+?)<\/TitleName>[\s\S]{0,500}?<nsuid>(\d{14})<\/nsuid>/gi;
+      while ((m = pB.exec(xml)) !== null) titleNsuidPairs.push([m[1].trim(), m[2]]);
+      // Pattern C: <title> near <nsuid>
+      const pC = /<title[^>]*>([^<]+)<\/title>[\s\S]{0,500}?<nsuid>(\d{14})<\/nsuid>/gi;
+      while ((m = pC.exec(xml)) !== null) titleNsuidPairs.push([m[1].trim(), m[2]]);
+      // Pattern D: any D{nsuid} anywhere (last resort — log count only)
+      const allIds = [...new Set((xml.match(/D(700[0-9]\d{10})/g) || []).map(x => x.slice(1)))];
+      if (!titleNsuidPairs.length && allIds.length) {
+        emit(`JP XML (${url.includes('coming') ? 'coming' : 'onsale'}): 0 title pairs but ${allIds.length} D-prefixed nsuids — XML schema unknown, logging sample: ${xml.slice(0, 300)}`);
+      }
 
       for (const [title, nsuid] of titleNsuidPairs) {
         if (/^700[0-9]\d{10}$/.test(nsuid)) map.set(title.toLowerCase(), nsuid);
       }
       fetched += titleNsuidPairs.length;
-      emit(`JP XML (${url.includes('coming') ? 'coming' : 'onsale'}): ${titleNsuidPairs.length} entries parsed`);
+      const label = url.includes('coming') ? 'coming' : 'onsale';
+      emit(`JP XML (${label}): ${titleNsuidPairs.length} title-nsuid pairs, ${allIds.length} D-nsuids in raw XML, size=${xml.length}`);
     } catch (e) {
       emit(`JP XML catalog: ${e.response?.status || e.code || e.message.slice(0, 50)}`);
     }

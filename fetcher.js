@@ -179,7 +179,7 @@ async function scrapeGamePrices(gameUrl) {
     await page.goto(gameUrl, { waitUntil: 'networkidle', timeout: 30000 });
     await page.waitForSelector('table, [class*="price"], [class*="country"]', { timeout: 10000 }).catch(() => {});
 
-    const { title, rows } = await page.evaluate(() => {
+    const { title, rows, nsuids } = await page.evaluate(() => {
       const title = document.title;
       const tableRows = [];
 
@@ -197,11 +197,54 @@ async function scrapeGamePrices(gameUrl) {
         });
       }
 
-      return { title, rows: tableRows };
+      // Extract NSUIDs from Nintendo eShop links or __NEXT_DATA__
+      const nsuids = {};
+
+      // Try __NEXT_DATA__ first (Next.js pages embed all data here)
+      try {
+        const nextDataEl = document.getElementById('__NEXT_DATA__');
+        if (nextDataEl) {
+          const json = JSON.parse(nextDataEl.textContent);
+          const findNsuids = (obj) => {
+            if (!obj || typeof obj !== 'object') return;
+            if (Array.isArray(obj)) { obj.forEach(findNsuids); return; }
+            // Look for objects with both a country/region and nsuid field
+            if (obj.nsuid && (obj.country || obj.region || obj.locale)) {
+              const key = obj.country || obj.region || obj.locale;
+              nsuids[key] = String(obj.nsuid);
+            }
+            Object.values(obj).forEach(findNsuids);
+          };
+          findNsuids(json);
+        }
+      } catch {}
+
+      // Fallback: scrape Nintendo eShop links (ec.nintendo.com/apps/{nsuid}/)
+      if (Object.keys(nsuids).length === 0) {
+        document.querySelectorAll('a[href*="ec.nintendo.com/apps/"], a[href*="nintendo.com"][href*="/apps/"]').forEach((a) => {
+          const m = a.href.match(/\/apps\/(\d{14})\//);
+          if (!m) return;
+          const nsuid = m[1];
+          // Walk up to find the row and get the country name
+          let el = a.parentElement;
+          for (let i = 0; i < 6; i++) {
+            if (!el) break;
+            const text = el.innerText || '';
+            const rowCells = el.querySelectorAll('td, th, [class*="country"]');
+            if (rowCells.length) {
+              const countryCell = rowCells[0].innerText.trim();
+              if (countryCell) { nsuids[countryCell] = nsuid; return; }
+            }
+            el = el.parentElement;
+          }
+        });
+      }
+
+      return { title, rows: tableRows, nsuids };
     });
 
     await browser.close();
-    return { title, rows };
+    return { title, rows, nsuids };
   } catch (err) {
     await browser.close();
     throw err;
@@ -273,7 +316,7 @@ async function main() {
   }
 
   console.log('Scraping game prices...');
-  const { title, rows } = await scrapeGamePrices(gameUrl);
+  const { title, rows, nsuids } = await scrapeGamePrices(gameUrl);
 
   const gameName = title.replace(/\s*[-|].*$/, '').trim();
   console.log(`\nGame: ${gameName}`);
@@ -307,19 +350,23 @@ async function main() {
     const currency = COUNTRY_CURRENCY[country];
     const denoms = GIFT_CARD_DENOMS[currency];
 
+    const nsuidForCountry = nsuids[country] ||
+      Object.entries(nsuids).find(([k]) => k.toLowerCase().includes(country.toLowerCase()) || country.toLowerCase().includes(k.toLowerCase()))?.[1] ||
+      null;
+
     if (!rawPrice || rawPrice.toLowerCase().includes('not') || rawPrice === '-') {
-      results.push({ country, rawPrice: null, effectiveAmount: null, sgdPrice: null, currency, denoms });
+      results.push({ country, rawPrice: null, effectiveAmount: null, sgdPrice: null, currency, denoms, nsuid: nsuidForCountry });
       continue;
     }
 
     if (rawPrice.toLowerCase() === 'free') {
-      results.push({ country, rawPrice: 'Free', effectiveAmount: 0, sgdPrice: 0, currency, denoms });
+      results.push({ country, rawPrice: 'Free', effectiveAmount: 0, sgdPrice: 0, currency, denoms, nsuid: nsuidForCountry });
       continue;
     }
 
     const amount = parsePrice(rawPrice);
     if (amount === null) {
-      results.push({ country, rawPrice, effectiveAmount: null, sgdPrice: null, currency, denoms });
+      results.push({ country, rawPrice, effectiveAmount: null, sgdPrice: null, currency, denoms, nsuid: nsuidForCountry });
       continue;
     }
 
@@ -333,7 +380,7 @@ async function main() {
       ? effectiveAmount * rate
       : null;
 
-    results.push({ country, rawPrice, amount, effectiveAmount, currency, denoms, sgdPrice });
+    results.push({ country, rawPrice, amount, effectiveAmount, currency, denoms, sgdPrice, nsuid: nsuidForCountry });
   }
 
   // Sort cheapest → most expensive (not available last)
@@ -345,7 +392,8 @@ async function main() {
   });
 
   // Display
-  const W = 85;
+  const hasNsuids = results.some((r) => r.nsuid);
+  const W = hasNsuids ? 102 : 85;
   const SEP = '─'.repeat(W);
   console.log(SEP);
   console.log(
@@ -354,7 +402,8 @@ async function main() {
     'Country'.padEnd(16) +
     'Listed Price'.padEnd(18) +
     'Gift Card Spend'.padEnd(22) +
-    'Cost in SGD'
+    'Cost in SGD'.padEnd(hasNsuids ? 17 : 11) +
+    (hasNsuids ? 'NSUID' : '')
   );
   console.log(SEP);
 
@@ -387,7 +436,8 @@ async function main() {
       r.country.padEnd(16) +
       listed.padEnd(18) +
       giftCard.padEnd(22) +
-      sgd
+      (hasNsuids ? sgd.padEnd(17) : sgd) +
+      (hasNsuids ? (r.nsuid ?? '-') : '')
     );
   }
 

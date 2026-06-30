@@ -674,7 +674,7 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
         } catch (e) { emit(`JP XML (P2): ${e.message.slice(0, 50)}`); }
       })(),
 
-      // Strategy B: store-jp.nintendo.com HTML search
+      // Strategy B: store-jp.nintendo.com HTML search — nsuids in D{nsuid} links or JSON blobs
       (async () => {
         for (const searchQuery of queries) {
           const q = encodeURIComponent(searchQuery);
@@ -684,7 +684,11 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
               timeout: 10000,
               headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept-Language': 'ja,en;q=0.9' },
             });
-            const ids = [...new Set((String(res.data).match(/D(700[0-9]\d{10})/g) || []).map(m => m.slice(1)))];
+            const html = String(res.data);
+            // Extract nsuids from D{nsuid} links AND bare 14-digit numbers in JSON blobs
+            const fromLinks = (html.match(/D(700[0-9]\d{10})/g) || []).map(m => m.slice(1));
+            const fromJson = (html.match(/"nsuid"\s*:\s*"(700[0-9]\d{10})"/g) || []).map(m => m.match(/(\d{14})/)[1]);
+            const ids = [...new Set([...fromLinks, ...fromJson])];
             emit(`JP store search (${label}): ${ids.length} nsuid(s)${ids.length ? ` [${ids.join(',')}]` : ''}`);
             if (ids.length) { ids.forEach(addNew); return; }
           } catch (e) { emit(`JP store search (${label}): ${e.message.slice(0, 60)}`); }
@@ -701,6 +705,30 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
           );
           if (ids.length) { ids.forEach(addNew); return; }
         }
+      })(),
+
+      // Strategy D: JP gap probe — JP nsuids can be 300+ away from US/EU, but probing ±500
+      // in chunks of 50 is only 20 requests and catches most cases
+      (async () => {
+        const base = jpNsuids.length ? jpNsuids : euPrimary.length ? euPrimary : [];
+        if (!base.length) { emit('JP probe: no base'); return; }
+        const JP_GAP = 500n;
+        const probeIds = [...new Set(base.flatMap(b => {
+          const bn = BigInt(b);
+          return Array.from({ length: Number(JP_GAP) }, (_, i) => [String(bn + BigInt(i + 1)), String(bn - BigInt(i + 1))]).flat();
+        }).filter(p => /^700[0-9]\d{10}$/.test(p) && !seen.has(p)))];
+        if (!probeIds.length) return;
+        const chunks = [];
+        for (let i = 0; i < probeIds.length; i += 50) chunks.push(probeIds.slice(i, i + 50));
+        let found = 0;
+        for (const chunk of chunks) {
+          try {
+            const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=JP&lang=ja&ids=${chunk.join(',')}`, { timeout: 20000 });
+            const hits = (res.data?.prices || []).filter(p => p.sales_status !== 'not_found' && (p.regular_price || p.discount_price));
+            hits.forEach(p => { addNew(String(p.title_id)); found++; });
+          } catch (e) { emit(`JP probe chunk: ${e.message.slice(0, 50)}`); break; }
+        }
+        emit(`JP probe ±${JP_GAP} off ${base.length} anchor(s): ${found} found`);
       })(),
     ]);
   }
@@ -754,13 +782,19 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
     : (euNsuids.length ? euNsuids.reduce((a, b) => BigInt(a) < BigInt(b) ? a : b) : null);
   const euPrimary = anchorEu ? euNsuids.filter(id => { const d = BigInt(id) > BigInt(anchorEu) ? BigInt(id) - BigInt(anchorEu) : BigInt(anchorEu) - BigInt(id); return d <= SAME_RANGE; }) : [];
 
-  // HK and JP run sequentially: JP re-search uses Japanese title found from first pass
-  // SG and US probes run in parallel since they don't depend on each other
-  const hkBase = hkNsuids.length ? hkNsuids : euPrimary;
+  // Run HK first so its discovered nsuids can anchor the SG probe.
+  // (asia.com is blocked on Render, so Phase 1 hkNsuids is always empty;
+  //  SG must probe off Phase 2 HK results or fall back to euPrimary.)
+  const hkCountBefore = newNsuids.length;
+  await findHK();
+  const hkPhase2Nsuids = newNsuids.slice(hkCountBefore);
+  const sgBase = hkPhase2Nsuids.length ? hkPhase2Nsuids
+    : hkNsuids.length ? hkNsuids
+    : euPrimary;
+
   await Promise.all([
-    findHK(),
     findJP(),
-    findSG(hkBase),
+    findSG(sgBase),
     findUS(euPrimary),
   ]);
 

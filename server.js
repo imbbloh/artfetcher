@@ -520,60 +520,84 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
     } catch (e) { emit(`${label}: ${e.message.slice(0, 50)}`); return { ids: [], localTitles: [] }; }
   }
 
-  // HK: search zh_HK catalog directly with Chinese title from Phase 1
+  // HK: search zh_HK catalog with Chinese title from Phase 1.
+  // Falls back to gap probe off EU nsuids when catalog is unreachable (blocked on Render).
   async function findHK() {
-    if (!hkLocalTitle) { emit('HK search: no Chinese title from Phase 1, skipping'); return; }
-    const zhQ = encodeURIComponent(hkLocalTitle);
-    const { ids } = await searchCatalog(
-      `https://searching.nintendo-asia.com/zh_HK/select?q=${zhQ}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
-      `HK search (ZH: "${hkLocalTitle.slice(0, 20)}")`
-    );
-    ids.forEach(addNew);
+    if (hkLocalTitle) {
+      const zhQ = encodeURIComponent(hkLocalTitle);
+      const { ids } = await searchCatalog(
+        `https://searching.nintendo-asia.com/zh_HK/select?q=${zhQ}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
+        `HK search (ZH: "${hkLocalTitle.slice(0, 20)}")`
+      );
+      ids.forEach(addNew);
+    } else {
+      // Fallback: gap probe off EU nsuids (HK and EU nsuids are typically within ±50)
+      const hkBase = hkNsuids.length ? hkNsuids : euPrimary;
+      if (!hkBase.length) { emit('HK probe: no base'); return; }
+      const HK_GAP = 50n;
+      const probeIds = [...new Set(hkBase.flatMap(b => {
+        const bn = BigInt(b);
+        return Array.from({ length: Number(HK_GAP) }, (_, i) => [String(bn + BigInt(i + 1)), String(bn - BigInt(i + 1))]).flat();
+      }).filter(p => /^700[0-9]\d{10}$/.test(p) && !seen.has(p)))].slice(0, 50);
+      if (!probeIds.length) return;
+      try {
+        const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=HK&lang=zh&ids=${probeIds.join(',')}`, { timeout: 20000 });
+        const found = (res.data?.prices || []).filter(p => p.sales_status !== 'not_found' && (p.regular_price || p.discount_price));
+        found.forEach(p => addNew(String(p.title_id)));
+        emit(`HK probe (fallback): ${found.length} found`);
+      } catch (e) { emit(`HK probe: ${e.message.slice(0, 50)}`); }
+    }
   }
 
-  // JP: search JP catalog + store-jp directly with Japanese title from Phase 1
+  // JP: search JP catalog + store-jp with Japanese title from Phase 1.
+  // Falls back to store-jp search with English title when catalog is unreachable.
   async function findJP() {
-    if (!jpLocalTitle) { emit('JP search: no Japanese title from Phase 1, skipping'); return; }
-    const jaQ = encodeURIComponent(jpLocalTitle);
+    const searchQuery = jpLocalTitle || gameName;
+    const label = jpLocalTitle ? `JA: "${jpLocalTitle.slice(0, 20)}"` : `EN: "${gameName.slice(0, 20)}"`;
+    const q = encodeURIComponent(searchQuery);
 
-    // store-jp: NSUIDs in D{nsuid} links
+    // store-jp: NSUIDs in D{nsuid} links — accessible from Render
     try {
-      const res = await axios.get(`https://store-jp.nintendo.com/search/?q=${jaQ}&genre=Game`, {
+      const res = await axios.get(`https://store-jp.nintendo.com/search/?q=${q}&genre=Game`, {
         timeout: 10000,
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept-Language': 'ja,en;q=0.9' },
       });
       const ids = [...new Set((String(res.data).match(/D(700[0-9]\d{10})/g) || []).map(m => m.slice(1)))];
-      emit(`JP store search (JA: "${jpLocalTitle.slice(0, 20)}"): ${ids.length} nsuid(s) [${ids.join(',')}]`);
+      emit(`JP store search (${label}): ${ids.length} nsuid(s)${ids.length ? ` [${ids.join(',')}]` : ''}`);
       ids.forEach(addNew);
     } catch (e) { emit(`JP store search: ${e.message.slice(0, 60)}`); }
 
-    // JP catalog search with Japanese title
-    const { ids } = await searchCatalog(
-      `https://searching.nintendo.co.jp/j01/select?q=${jaQ}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
-      `JP catalog (JA: "${jpLocalTitle.slice(0, 20)}")`
-    );
-    ids.forEach(addNew);
+    // JP catalog — only try if endpoint is reachable (may be blocked on Render)
+    if (jpLocalTitle) {
+      const { ids } = await searchCatalog(
+        `https://searching.nintendo.co.jp/j01/select?q=${q}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
+        `JP catalog (${label})`
+      );
+      ids.forEach(addNew);
+    }
   }
 
-  // SG: anchored probe off HK nsuids (SG shares Asia eShop, nsuids are close)
+  // SG: gap probe off HK nsuids, chunked to avoid 400 errors
   async function findSG(hkBase) {
-    if (!hkBase.length) { emit('SG probe: no HK base'); return; }
+    if (!hkBase.length) { emit('SG probe: no base'); return; }
     const SG_GAP = 50n;
-    const probeIds = [];
-    for (const b of hkBase) {
+    const probeIds = [...new Set(hkBase.flatMap(b => {
       const bn = BigInt(b);
-      for (let d = 1n; d <= SG_GAP; d++) {
-        for (const p of [String(bn + d), String(bn - d)])
-          if (/^700[0-9]\d{10}$/.test(p) && !seen.has(p)) probeIds.push(p);
-      }
-    }
+      return Array.from({ length: Number(SG_GAP) }, (_, i) => [String(bn + BigInt(i + 1)), String(bn - BigInt(i + 1))]).flat();
+    }).filter(p => /^700[0-9]\d{10}$/.test(p) && !seen.has(p)))];
     if (!probeIds.length) return;
-    try {
-      const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=SG&lang=en&ids=${[...new Set(probeIds)].slice(0, 100).join(',')}`, { timeout: 20000 });
-      const found = (res.data?.prices || []).filter(p => p.sales_status !== 'not_found' && (p.regular_price || p.discount_price));
-      found.forEach(p => addNew(String(p.title_id)));
-      emit(`SG probe: ${found.length} found`);
-    } catch (e) { emit(`SG probe: ${e.message.slice(0, 50)}`); }
+    // Chunk into 50 IDs per request to stay within API limits
+    const chunks = [];
+    for (let i = 0; i < probeIds.length; i += 50) chunks.push(probeIds.slice(i, i + 50));
+    let found = 0;
+    for (const chunk of chunks) {
+      try {
+        const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=SG&lang=en&ids=${chunk.join(',')}`, { timeout: 20000 });
+        const hits = (res.data?.prices || []).filter(p => p.sales_status !== 'not_found' && (p.regular_price || p.discount_price));
+        hits.forEach(p => { addNew(String(p.title_id)); found++; });
+      } catch (e) { emit(`SG probe chunk: ${e.message.slice(0, 50)}`); break; }
+    }
+    emit(`SG probe: ${found} found`);
   }
 
   // US fallback probe off EU nsuids when Algolia/nintendo.com missed US nsuid
@@ -730,21 +754,6 @@ async function buildResults(gameUrl, emit, onPartial) {
     const probeNsuids = await findNsuidsPhase2(gameUrl, phase1, emit);
     finalNsuids = [...phase1.nsuids, ...probeNsuids];
     finalName = phase1.gameName;
-    // Phase 3: DekuDeals browser only (eshop-prices always 403s on Render).
-    // DekuDeals passes Cloudflare and embeds SG/HK/JP regional ec.nintendo.com links.
-    // Only ONE browser at a time to stay within Render's memory limit.
-    const p3Slug = phase1.rawSlug || extractSlugFromUrl(gameUrl);
-    const dekuUrl = `https://www.dekudeals.com/items/${p3Slug}`;
-    fetchNsuidsFromDekuDealsBrowser(dekuUrl, emit).then(async ({ regionMap }) => {
-      const allNew = Object.values(regionMap)
-        .filter(id => /^700[0-9]\d{10}$/.test(id) && !phase1.seen.has(id) && !probeNsuids.includes(id));
-      if (!allNew.length) { emit('DekuDeals Phase 3: no new nsuids'); return; }
-      emit(`DekuDeals Phase 3: +${allNew.length} new nsuid(s), updating cache`);
-      const p3Nsuids = [...finalNsuids, ...allNew];
-      const p3Prices = await getNintendoPrices(p3Nsuids, emit);
-      const p3Data = buildResultData(finalName, p3Prices, rateResult);
-      cache.set(gameUrl, { data: p3Data, time: Date.now() });
-    }).catch(() => {});
   }
 
   const p2Prices = await getNintendoPrices(finalNsuids, emit);

@@ -269,7 +269,18 @@ async function fetchNsuidsFromDekuDealsBrowser(gameUrl, emit) {
 
 // ─── URL helpers ─────────────────────────────────────────────────────────────
 
-const SUPPORTED_URL = /eshop-prices\.com\/games\/|dekudeals\.com\/items\/|(?:www\.)?nintendo\.com\/[a-z]{2}\/store\/products\//i;
+const SUPPORTED_URL = /eshop-prices\.com\/games\/|dekudeals\.com\/items\/|(?:www\.)?nintendo\.com\/[a-z]{2}\/store\/products\/|store-jp\.nintendo\.com\/item\/software\/D\d+|ec\.nintendo\.com\/[A-Z]{2}\/[a-z_]+\/titles\/\d+/i;
+
+// Extract a seed NSUID directly from URLs that embed it, e.g.:
+//   store-jp.nintendo.com/item/software/D70010000095201  → 70010000095201
+//   ec.nintendo.com/JP/ja/titles/70010000095201          → 70010000095201
+function extractNsuidFromUrl(gameUrl) {
+  const jpStore = gameUrl.match(/store-jp\.nintendo\.com\/item\/software\/D(\d+)/i);
+  if (jpStore) return jpStore[1];
+  const ecNintendo = gameUrl.match(/ec\.nintendo\.com\/[A-Z]{2}\/[a-z_]+\/titles\/(\d+)/i);
+  if (ecNintendo) return ecNintendo[1];
+  return null;
+}
 
 function extractSlugFromUrl(gameUrl) {
   // nintendo.com/us/store/products/{slug}/ → strip trailing -switch/-nintendo-switch
@@ -304,6 +315,16 @@ async function findNsuidsPhase1(gameUrl, emit) {
 
   const add = (id) => { const s = String(id || ''); if (/^700[0-9]\d{10}$/.test(s) && !seen.has(s)) { seen.add(s); nsuids.push(s); } };
   const addMany = (ids) => { for (const id of (ids || [])) add(id); };
+
+  // If the URL itself contains the NSUID (store-jp or ec.nintendo.com), seed it immediately
+  const seedNsuid = extractNsuidFromUrl(gameUrl);
+  if (seedNsuid) {
+    add(seedNsuid);
+    // Determine which region bucket it belongs to by querying JP price API
+    const isJp = gameUrl.includes('store-jp') || /ec\.nintendo\.com\/JP\//i.test(gameUrl);
+    if (isJp) jpNsuids.push(seedNsuid);
+    emit(`Seed NSUID from URL: ${seedNsuid}${isJp ? ' (JP)' : ''}`);
+  }
 
   emit(`Searching for "${slug}"...`);
 
@@ -365,16 +386,25 @@ async function findNsuidsPhase1(gameUrl, emit) {
     // store-jp.nintendo.com search — NSUIDs appear directly in product URLs as D{nsuid}
     // Most reliable JP source: works even when catalog keyword match fails for non-English titles
     (async () => {
-      try {
-        const res = await axios.get(`https://store-jp.nintendo.com/search/?q=${q}&genre=Game`, {
-          timeout: 10000,
-          headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'ja,en;q=0.9' },
-        });
-        const ids = [...new Set((String(res.data).match(/D(700[0-9]\d{10})/g) || []).map(m => m.slice(1)))];
-        const before = nsuids.length;
-        for (const id of ids) { add(id); jpNsuids.push(id); }
-        emit(`JP store search: +${nsuids.length - before} nsuid(s) [${ids.join(',')}]`);
-      } catch (e) { emit(`JP store search: ${e.message.slice(0, 60)}`); }
+      // Use a shorter query (first 3 words) for better JP store match rate
+      const jpQ = encodeURIComponent(words.slice(0, 3).join(' '));
+      for (const searchUrl of [
+        `https://store-jp.nintendo.com/search/?q=${jpQ}&genre=Game`,
+        `https://store-jp.nintendo.com/search/?q=${q}&genre=Game`,
+      ]) {
+        try {
+          const res = await axios.get(searchUrl, {
+            timeout: 10000,
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept-Language': 'ja,en;q=0.9' },
+          });
+          const ids = [...new Set((String(res.data).match(/D(700[0-9]\d{10})/g) || []).map(m => m.slice(1)))];
+          if (!ids.length) continue;
+          const before = nsuids.length;
+          for (const id of ids) { add(id); jpNsuids.push(id); }
+          emit(`JP store search: +${nsuids.length - before} nsuid(s) [${ids.join(',')}]`);
+          break;
+        } catch (e) { emit(`JP store search: ${e.message.slice(0, 60)}`); }
+      }
     })(),
     getAlgoliaKey(emit),
   ]);
@@ -787,7 +817,7 @@ function startTelegramBot() {
 
   const bot = new TelegramBot(token, { polling: { interval: 2000, autoStart: true, params: { timeout: 10 } } });
   console.log('  Telegram bot active.');
-  const ESHOP_URL_RE = /https?:\/\/(?:eshop-prices\.com\/games\/|(?:www\.)?dekudeals\.com\/items\/|(?:www\.)?nintendo\.com\/[a-z]{2}\/store\/products\/)[^\s]+/i;
+  const ESHOP_URL_RE = /https?:\/\/(?:eshop-prices\.com\/games\/|(?:www\.)?dekudeals\.com\/items\/|(?:www\.)?nintendo\.com\/[a-z]{2}\/store\/products\/|store-jp\.nintendo\.com\/item\/software\/D\d+|ec\.nintendo\.com\/[A-Z]{2}\/[a-z_]+\/titles\/\d+)[^\s]*/i;
 
   async function handleUrl(chatId, gameUrl, messageId) {
     const statusMsg = await bot.sendMessage(chatId, '🔍 Searching prices\\.\\.\\. please wait\\.', { parse_mode: 'MarkdownV2', reply_to_message_id: messageId });

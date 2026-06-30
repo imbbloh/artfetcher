@@ -297,6 +297,8 @@ async function findNsuidsPhase1(gameUrl, emit) {
   const seen = new Set();
   const nsuids = [];
   const euNsuids = [];
+  const jpNsuids = [];
+  const hkNsuids = [];
   let usNsuid = null;
   let gameName = '';
 
@@ -334,12 +336,15 @@ async function findNsuidsPhase1(gameUrl, emit) {
           const scored = docs.map(d => ({ d, score: words.filter(w => (d.title || '').toLowerCase().includes(w)).length })).sort((a, b) => b.score - a.score);
           const before = nsuids.length;
           const ids = [];
-          for (const { d } of scored.slice(0, 5)) for (const id of (d.nsuid_txt || [])) { add(id); ids.push(id); }
+          for (const { d } of scored.slice(0, 5)) for (const id of (d.nsuid_txt || [])) {
+            add(id); ids.push(id);
+            if (locale === 'zh_HK') hkNsuids.push(id);
+          }
           emit(`Asia catalog (${locale}): +${nsuids.length - before} nsuid(s) [${ids.join(',')}]`);
         } catch (e) { emit(`Asia catalog (${locale}): ${e.message.slice(0, 50)}`); }
       }
     })(),
-    // Nintendo Japan catalog — JP nsuids are far from US/EU, can't be found by probing
+    // Nintendo Japan catalog — JP nsuids are far from US/EU, can't be found by probing US/EU anchors
     (async () => {
       for (const endpoint of [
         `https://searching.nintendo.co.jp/j01/select?q=${q}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
@@ -351,7 +356,7 @@ async function findNsuidsPhase1(gameUrl, emit) {
           if (!docs.length) continue;
           const before = nsuids.length;
           const ids = [];
-          for (const d of docs.slice(0, 5)) for (const id of (d.nsuid_txt || [])) { add(id); ids.push(id); }
+          for (const d of docs.slice(0, 5)) for (const id of (d.nsuid_txt || [])) { add(id); ids.push(id); jpNsuids.push(id); }
           emit(`JP catalog: +${nsuids.length - before} nsuid(s) [${ids.join(',')}]`);
           break;
         } catch (e) { emit(`JP catalog (${endpoint.includes('co.jp') ? 'co.jp' : 'asia'}): ${e.message.slice(0, 50)}`); }
@@ -440,18 +445,19 @@ async function findNsuidsPhase1(gameUrl, emit) {
   }
 
   emit(`Phase 1 done: "${gameName}", ${nsuids.length} nsuids found`);
-  return { nsuids, seen, gameName, euNsuids, usNsuid, rawSlug };
+  return { nsuids, seen, gameName, euNsuids, jpNsuids, hkNsuids, usNsuid, rawSlug };
 }
 
 // ─── Phase 2: slow nsuid discovery (probe + eshop-prices browser) ─────────────
 
-async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, usNsuid }, emit) {
+async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, hkNsuids, usNsuid }, emit) {
   const newNsuids = [];
   const addNew = (id) => { const s = String(id || ''); if (/^700[0-9]\d{10}$/.test(s) && !seen.has(s)) { seen.add(s); newNsuids.push(s); } };
 
   const SAME_RANGE = 10000n;
-  const JP_GAP = 10n;
+  const JP_GAP = 20n;
   const HK_GAP = 50n;
+  const SG_GAP = 50n;
 
   // Anchor EU primary to the EU nsuid closest to usNsuid
   const anchorEu = usNsuid && euNsuids.length
@@ -523,18 +529,30 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, usNsuid }, 
     else emit(`${cc} probe: none accepted (verified=${verifiedHits.length}, closeAny=${closeAny.length})`);
   }
 
-  // JP probe anchors: use both usNsuid and euPrimary (AU nsuid).
-  // AU is always reliably found; JP is often AU±1. Using both ensures coverage
-  // when US and AU nsuids differ slightly.
-  const jpBase = [...new Set([...(usNsuid ? [usNsuid] : []), ...euPrimary])];
-  const hkBase = euPrimary;
+  // JP probe: prefer JP catalog nsuids from Phase 1 as anchor — they're the right namespace.
+  // Fall back to US/EU only if catalog found nothing (JP nsuids can be far from US/EU).
+  const jpCatalogBase = jpNsuids.filter(id => !seen.has(id) || jpNsuids.includes(id));
+  const jpBase = jpCatalogBase.length
+    ? jpCatalogBase
+    : [...new Set([...(usNsuid ? [usNsuid] : []), ...euPrimary])];
+
+  // HK probe: anchor to Phase 1 HK catalog nsuids if available, else EU (AU) nsuids
+  const hkCatalogBase = hkNsuids.filter(id => !seen.has(id) || hkNsuids.includes(id));
+  const hkBase = hkCatalogBase.length ? hkCatalogBase : euPrimary;
+  const hkBaseBigInts = hkBase.map(id => BigInt(id));
+
+  // SG probe: anchor to HK nsuids — SG and HK share the Asia eShop and nsuids are close
+  const sgBase = hkBase;
+  const sgBaseBigInts = hkBaseBigInts;
+
   const US_GAP = 20n;
 
   // Probes are fast (~1-2s). Run them first so results aren't delayed by the browser.
   // US probe runs only when usNsuid wasn't found in Phase 1 (Algolia/nintendo.com missed).
   await Promise.allSettled([
     probeRegion('JP', 'ja', buildProbeIds(jpBase, JP_GAP), jpBase.map(BigInt), JP_GAP),
-    probeRegion('HK', 'zh', buildProbeIds(hkBase, HK_GAP), euBigInts, HK_GAP),
+    probeRegion('HK', 'zh', buildProbeIds(hkBase, HK_GAP), hkBaseBigInts, HK_GAP),
+    probeRegion('SG', 'en', buildProbeIds(sgBase, SG_GAP), sgBaseBigInts, SG_GAP),
     ...(!usNsuid && euPrimary.length ? [probeRegion('US', 'en', buildProbeIds(euPrimary, US_GAP), euBigInts, US_GAP)] : []),
   ]);
 

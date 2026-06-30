@@ -312,6 +312,8 @@ async function findNsuidsPhase1(gameUrl, emit) {
   const hkNsuids = [];
   let usNsuid = null;
   let gameName = '';
+  let hkLocalTitle = '';  // Chinese title from zh_HK catalog
+  let jpLocalTitle = '';  // Japanese title from JP catalog
 
   const add = (id) => { const s = String(id || ''); if (/^700[0-9]\d{10}$/.test(s) && !seen.has(s)) { seen.add(s); nsuids.push(s); } };
   const addMany = (ids) => { for (const id of (ids || [])) add(id); };
@@ -357,11 +359,11 @@ async function findNsuidsPhase1(gameUrl, emit) {
           const scored = docs.map(d => ({ d, score: words.filter(w => (d.title || '').toLowerCase().includes(w)).length })).sort((a, b) => b.score - a.score);
           const before = nsuids.length;
           const ids = [];
-          for (const { d } of scored.slice(0, 5)) for (const id of (d.nsuid_txt || [])) {
-            add(id); ids.push(id);
-            if (locale === 'zh_HK') hkNsuids.push(id);
+          for (const { d } of scored.slice(0, 5)) {
+            for (const id of (d.nsuid_txt || [])) { add(id); ids.push(id); if (locale === 'zh_HK') hkNsuids.push(id); }
+            if (locale === 'zh_HK' && d.title && !hkLocalTitle) hkLocalTitle = d.title;
           }
-          emit(`Asia catalog (${locale}): +${nsuids.length - before} nsuid(s) [${ids.join(',')}]`);
+          emit(`Asia catalog (${locale}): +${nsuids.length - before} nsuid(s)${hkLocalTitle && locale === 'zh_HK' ? ` title="${hkLocalTitle}"` : ''} [${ids.join(',')}]`);
         } catch (e) { emit(`Asia catalog (${locale}): ${e.message.slice(0, 50)}`); }
       }
     })(),
@@ -377,8 +379,11 @@ async function findNsuidsPhase1(gameUrl, emit) {
           if (!docs.length) continue;
           const before = nsuids.length;
           const ids = [];
-          for (const d of docs.slice(0, 5)) for (const id of (d.nsuid_txt || [])) { add(id); ids.push(id); jpNsuids.push(id); }
-          emit(`JP catalog: +${nsuids.length - before} nsuid(s) [${ids.join(',')}]`);
+          for (const d of docs.slice(0, 5)) {
+            for (const id of (d.nsuid_txt || [])) { add(id); ids.push(id); jpNsuids.push(id); }
+            if (d.title && !jpLocalTitle) jpLocalTitle = d.title;
+          }
+          emit(`JP catalog: +${nsuids.length - before} nsuid(s)${jpLocalTitle ? ` title="${jpLocalTitle}"` : ''} [${ids.join(',')}]`);
           break;
         } catch (e) { emit(`JP catalog (${endpoint.includes('co.jp') ? 'co.jp' : 'asia'}): ${e.message.slice(0, 50)}`); }
       }
@@ -488,13 +493,13 @@ async function findNsuidsPhase1(gameUrl, emit) {
     emit(`usNsuid: overriding with 7001 nsuid ${usNsuid}`);
   }
 
-  emit(`Phase 1 done: "${gameName}", ${nsuids.length} nsuids found`);
-  return { nsuids, seen, gameName, euNsuids, jpNsuids, hkNsuids, usNsuid, rawSlug };
+  emit(`Phase 1 done: "${gameName}", ${nsuids.length} nsuids found, hkTitle="${hkLocalTitle}" jpTitle="${jpLocalTitle}"`);
+  return { nsuids, seen, gameName, euNsuids, jpNsuids, hkNsuids, usNsuid, rawSlug, hkLocalTitle, jpLocalTitle };
 }
 
 // ─── Phase 2: catalog search for HK and JP using English + localized titles ────
 
-async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, hkNsuids, usNsuid }, emit) {
+async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, hkNsuids, usNsuid, hkLocalTitle, jpLocalTitle }, emit) {
   const newNsuids = [];
   const addNew = (id) => { const s = String(id || ''); if (/^700[0-9]\d{10}$/.test(s) && !seen.has(s)) { seen.add(s); newNsuids.push(s); } };
 
@@ -515,61 +520,39 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
     } catch (e) { emit(`${label}: ${e.message.slice(0, 50)}`); return { ids: [], localTitles: [] }; }
   }
 
-  // HK: search with English → get Chinese title → search again with Chinese title
+  // HK: search zh_HK catalog directly with Chinese title from Phase 1
   async function findHK() {
-    const enQ = encodeURIComponent(gameName);
-    const { ids: enIds, localTitles } = await searchCatalog(
-      `https://searching.nintendo-asia.com/zh_HK/select?q=${enQ}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
-      'HK search (EN)'
+    if (!hkLocalTitle) { emit('HK search: no Chinese title from Phase 1, skipping'); return; }
+    const zhQ = encodeURIComponent(hkLocalTitle);
+    const { ids } = await searchCatalog(
+      `https://searching.nintendo-asia.com/zh_HK/select?q=${zhQ}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
+      `HK search (ZH: "${hkLocalTitle.slice(0, 20)}")`
     );
-    enIds.forEach(addNew);
-
-    // Re-search with each unique Chinese title found (Nintendo's own store = accurate source)
-    const zhTitles = [...new Set(localTitles)].filter(t => t !== gameName);
-    for (const title of zhTitles.slice(0, 2)) {
-      const zhQ = encodeURIComponent(title);
-      const { ids: zhIds } = await searchCatalog(
-        `https://searching.nintendo-asia.com/zh_HK/select?q=${zhQ}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
-        `HK search (ZH: "${title.slice(0, 15)}")`
-      );
-      zhIds.forEach(addNew);
-    }
+    ids.forEach(addNew);
   }
 
-  // JP: search with English via store-jp + catalog → get Japanese title → search again
+  // JP: search JP catalog + store-jp directly with Japanese title from Phase 1
   async function findJP() {
-    const enQ = encodeURIComponent(gameName);
-    const shortQ = encodeURIComponent(gameName.split(' ').slice(0, 3).join(' '));
+    if (!jpLocalTitle) { emit('JP search: no Japanese title from Phase 1, skipping'); return; }
+    const jaQ = encodeURIComponent(jpLocalTitle);
 
-    // Store-jp search (NSUIDs in D{nsuid} links)
-    for (const q of [shortQ, enQ]) {
-      try {
-        const res = await axios.get(`https://store-jp.nintendo.com/search/?q=${q}&genre=Game`, {
-          timeout: 10000,
-          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept-Language': 'ja,en;q=0.9' },
-        });
-        const ids = [...new Set((String(res.data).match(/D(700[0-9]\d{10})/g) || []).map(m => m.slice(1)))];
-        if (ids.length) { emit(`JP store search: ${ids.length} nsuid(s) [${ids.join(',')}]`); ids.forEach(addNew); break; }
-        else emit(`JP store search (q="${decodeURIComponent(q)}"): no results`);
-      } catch (e) { emit(`JP store search: ${e.message.slice(0, 60)}`); }
-    }
+    // store-jp: NSUIDs in D{nsuid} links
+    try {
+      const res = await axios.get(`https://store-jp.nintendo.com/search/?q=${jaQ}&genre=Game`, {
+        timeout: 10000,
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept-Language': 'ja,en;q=0.9' },
+      });
+      const ids = [...new Set((String(res.data).match(/D(700[0-9]\d{10})/g) || []).map(m => m.slice(1)))];
+      emit(`JP store search (JA: "${jpLocalTitle.slice(0, 20)}"): ${ids.length} nsuid(s) [${ids.join(',')}]`);
+      ids.forEach(addNew);
+    } catch (e) { emit(`JP store search: ${e.message.slice(0, 60)}`); }
 
-    // Catalog search with English → get Japanese title → search again
-    const { ids: enIds, localTitles } = await searchCatalog(
-      `https://searching.nintendo.co.jp/j01/select?q=${enQ}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
-      'JP catalog (EN)'
+    // JP catalog search with Japanese title
+    const { ids } = await searchCatalog(
+      `https://searching.nintendo.co.jp/j01/select?q=${jaQ}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
+      `JP catalog (JA: "${jpLocalTitle.slice(0, 20)}")`
     );
-    enIds.forEach(addNew);
-
-    const jaTitles = [...new Set(localTitles)].filter(t => t !== gameName);
-    for (const title of jaTitles.slice(0, 2)) {
-      const jaQ = encodeURIComponent(title);
-      const { ids: jaIds } = await searchCatalog(
-        `https://searching.nintendo.co.jp/j01/select?q=${jaQ}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
-        `JP catalog (JA: "${title.slice(0, 15)}")`
-      );
-      jaIds.forEach(addNew);
-    }
+    ids.forEach(addNew);
   }
 
   // SG: anchored probe off HK nsuids (SG shares Asia eShop, nsuids are close)

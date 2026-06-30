@@ -824,28 +824,10 @@ function startTelegramBot() {
     const logs = [];
     const emit = (msg) => { logs.push(msg); console.log('[bot]', msg); };
 
-    let partialMsgId = null;
-    const onPartial = async (data) => {
-      try {
-        const text = formatTelegramMessage(data, '_⏳ Initial results \\(still searching JP/HK/SG\\)…_');
-        const sent = await bot.sendMessage(chatId, text, { parse_mode: 'MarkdownV2', disable_web_page_preview: true });
-        partialMsgId = sent.message_id;
-      } catch {}
-    };
-
     try {
-      const data = await buildResults(gameUrl, emit, onPartial);
+      const data = await buildResults(gameUrl, emit);
       const finalText = formatTelegramMessage(data);
-      if (partialMsgId) {
-        await bot.editMessageText(finalText, { chat_id: chatId, message_id: partialMsgId, parse_mode: 'MarkdownV2', disable_web_page_preview: true }).catch(err => {
-          // "message is not modified" means content unchanged (Phase 2 found nothing new) — no action needed
-          if (!String(err.message).includes('message is not modified')) {
-            return bot.sendMessage(chatId, finalText, { parse_mode: 'MarkdownV2', disable_web_page_preview: true });
-          }
-        });
-      } else {
-        await bot.sendMessage(chatId, finalText, { parse_mode: 'MarkdownV2', disable_web_page_preview: true });
-      }
+      await bot.sendMessage(chatId, finalText, { parse_mode: 'MarkdownV2', disable_web_page_preview: true });
       await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
     } catch (err) {
       const logText = logs.length ? `\n\nDebug:\n${logs.slice(-8).join('\n')}` : '';

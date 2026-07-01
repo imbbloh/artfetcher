@@ -91,11 +91,6 @@ let algoliaKeyCache = { key: null, time: 0 };
 const ALGOLIA_KEY_TTL = 12 * 60 * 60 * 1000;
 const ALGOLIA_APP_ID = 'U3B6GR4UA3';
 
-// JP XML catalog cache — refreshed hourly
-// Maps lowercase title → nsuid (14-digit string)
-let jpXmlCache = { map: null, time: 0 };
-const JP_XML_TTL = 60 * 60 * 1000;
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 app.use(express.static(path.join(__dirname, 'public')));
@@ -187,100 +182,6 @@ async function getAlgoliaKey(emit) {
     }
   } catch (e) { emit(`Algolia scan: ${e.message.slice(0, 60)}`); }
   return algoliaKeyCache.key;
-}
-
-// ─── JP XML catalog ───────────────────────────────────────────────────────────
-// Nintendo publishes a full list of on-sale JP Switch titles as XML.
-// We cache it for 1 hour and fuzzy-match by title to resolve JP NSUIDs.
-
-async function getJpXmlCatalog(emit) {
-  const now = Date.now();
-  if (jpXmlCache.map && now - jpXmlCache.time < JP_XML_TTL) return jpXmlCache.map;
-
-  const urls = [
-    'https://www.nintendo.co.jp/data/software/xml-system/switch-onsale.xml',
-    'https://www.nintendo.co.jp/data/software/xml-system/switch-coming.xml',
-  ];
-
-  const map = new Map(); // lowercase title → nsuid
-  let fetched = 0;
-
-  for (const url of urls) {
-    try {
-      const res = await axios.get(url, {
-        timeout: 15000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-          'Accept': 'text/xml,application/xml,*/*',
-          'Accept-Language': 'ja,en;q=0.9',
-          'Referer': 'https://www.nintendo.co.jp/',
-        },
-      });
-      const xml = String(res.data);
-      const titleNsuidPairs = [];
-      let m;
-      // Pattern A: <TitleName> + <LinkURL>...D{nsuid}...  (coming XML schema)
-      const pA = /<TitleName[^>]*>([\s\S]+?)<\/TitleName>[\s\S]{0,800}?<LinkUrl[^>]*>[^<]*D(700[0-9]\d{10})[^<]*<\/LinkUrl>/gi;
-      while ((m = pA.exec(xml)) !== null) titleNsuidPairs.push([m[1].trim(), m[2]]);
-      // Pattern B: <TitleName> near bare <nsuid> tag
-      const pB = /<TitleName[^>]*>([\s\S]+?)<\/TitleName>[\s\S]{0,800}?<(?:nsuid|Nsuid|NsuidTxt)[^>]*>(\d{14})<\/(?:nsuid|Nsuid|NsuidTxt)>/gi;
-      while ((m = pB.exec(xml)) !== null) titleNsuidPairs.push([m[1].trim(), m[2]]);
-      // Pattern C: <title> near <nsuid>
-      const pC = /<title[^>]*>([^<]+)<\/title>[\s\S]{0,800}?<(?:nsuid|NsuidTxt)[^>]*>(\d{14})<\/(?:nsuid|NsuidTxt)>/gi;
-      while ((m = pC.exec(xml)) !== null) titleNsuidPairs.push([m[1].trim(), m[2]]);
-      // Pattern D: any bare 14-digit nsuid in XML paired with nearest TitleName (onsale schema)
-      // Split on TitleInfo blocks and extract both TitleName and any 14-digit number starting 7001
-      const blocks = xml.split(/<\/?TitleInfo[^>]*>/i);
-      for (let i = 0; i < blocks.length; i++) {
-        const block = blocks[i];
-        const titleM = block.match(/<TitleName[^>]*>([\s\S]+?)<\/TitleName>/i);
-        const nsuidM = block.match(/\b(700[0-9]\d{10})\b/);
-        if (titleM && nsuidM) titleNsuidPairs.push([titleM[1].trim(), nsuidM[1]]);
-      }
-
-      const allNsuids = [...new Set((xml.match(/\b(700[0-9]\d{10})\b/g) || []))];
-      if (!titleNsuidPairs.length) {
-        emit(`JP XML (${url.includes('coming') ? 'coming' : 'onsale'}): 0 pairs — sample: ${xml.slice(0, 400).replace(/\n/g, ' ')}`);
-      }
-
-      for (const [title, nsuid] of titleNsuidPairs) {
-        if (/^700[0-9]\d{10}$/.test(nsuid)) map.set(title.toLowerCase(), nsuid);
-      }
-      const label = url.includes('coming') ? 'coming' : 'onsale';
-      emit(`JP XML (${label}): ${titleNsuidPairs.length} title-nsuid pairs, ${allNsuids.length} nsuids in XML, size=${xml.length}`);
-    } catch (e) {
-      emit(`JP XML catalog: ${e.response?.status || e.code || e.message.slice(0, 50)}`);
-    }
-  }
-
-  if (map.size > 0) {
-    jpXmlCache = { map, time: now };
-    emit(`JP XML catalog: ${map.size} titles cached`);
-  }
-  return map;
-}
-
-// Find the best-matching JP NSUID from the XML catalog for a given English/Japanese query.
-// Uses word-overlap scoring; returns nsuid string or null.
-function matchJpXmlTitle(catalogMap, query) {
-  if (!catalogMap || catalogMap.size === 0) return null;
-  const qLower = query.toLowerCase();
-  // Exact match first
-  if (catalogMap.has(qLower)) return catalogMap.get(qLower);
-  // Tokenize query into significant words (length ≥ 2)
-  const qWords = qLower.replace(/[™®©:！？。、]/g, ' ').split(/\s+/).filter(w => w.length >= 2);
-  if (!qWords.length) return null;
-
-  let best = null, bestScore = 0;
-  for (const [title, nsuid] of catalogMap) {
-    const tWords = title.replace(/[™®©:！？。、]/g, ' ').split(/\s+/).filter(w => w.length >= 2);
-    // Count matching words in both directions (title contains query words AND query contains title words)
-    const fwd = qWords.filter(w => title.includes(w)).length / qWords.length;
-    const rev = tWords.filter(w => qLower.includes(w)).length / Math.max(tWords.length, 1);
-    const score = (fwd + rev) / 2;
-    if (score > bestScore && score >= 0.5) { bestScore = score; best = nsuid; }
-  }
-  return best;
 }
 
 // ─── Nsuid fetch helpers ──────────────────────────────────────────────────────
@@ -511,15 +412,6 @@ async function findNsuidsPhase1(gameUrl, emit) {
       }
     })(),
     getAlgoliaKey(emit),
-    // JP XML catalog — fetch all on-sale JP titles in parallel with other searches
-    (async () => {
-      try {
-        const xmlMap = await getJpXmlCatalog(emit);
-        const nsuid = matchJpXmlTitle(xmlMap, slug);
-        if (nsuid) { add(nsuid); jpNsuids.push(nsuid); emit(`JP XML match (P1): nsuid=${nsuid}`); }
-        else emit(`JP XML match (P1): no match for "${slug.slice(0, 30)}" — will retry in Phase 2`);
-      } catch (e) { emit(`JP XML: ${e.message.slice(0, 50)}`); }
-    })(),
   ]);
 
   const nameSlug = toNintendoSlug(gameName || slug);
@@ -657,80 +549,32 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
     }
   }
 
-  // JP: multiple strategies in parallel — XML catalog, store-jp search, JP Solr catalog
+  // JP: search JP catalog + store-jp with Japanese title from Phase 1.
+  // Falls back to store-jp search with English title when catalog is unreachable.
   async function findJP() {
-    const queries = jpLocalTitle ? [jpLocalTitle, gameName] : [gameName];
+    const searchQuery = jpLocalTitle || gameName;
+    const label = jpLocalTitle ? `JA: "${jpLocalTitle.slice(0, 20)}"` : `EN: "${gameName.slice(0, 20)}"`;
+    const q = encodeURIComponent(searchQuery);
 
-    await Promise.all([
-      // Strategy A: JP XML catalog (cached hourly from nintendo.co.jp)
-      (async () => {
-        try {
-          const xmlMap = await getJpXmlCatalog(emit);
-          for (const q of queries) {
-            const nsuid = matchJpXmlTitle(xmlMap, q);
-            if (nsuid) { addNew(nsuid); emit(`JP XML match (P2, query="${q.slice(0, 25)}"): nsuid=${nsuid}`); return; }
-          }
-          emit(`JP XML match (P2): no match for [${queries.map(q => q.slice(0, 20)).join(' / ')}]`);
-        } catch (e) { emit(`JP XML (P2): ${e.message.slice(0, 50)}`); }
-      })(),
+    // store-jp: NSUIDs in D{nsuid} links — accessible from Render
+    try {
+      const res = await axios.get(`https://store-jp.nintendo.com/search/?q=${q}&genre=Game`, {
+        timeout: 10000,
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept-Language': 'ja,en;q=0.9' },
+      });
+      const ids = [...new Set((String(res.data).match(/D(700[0-9]\d{10})/g) || []).map(m => m.slice(1)))];
+      emit(`JP store search (${label}): ${ids.length} nsuid(s)${ids.length ? ` [${ids.join(',')}]` : ''}`);
+      ids.forEach(addNew);
+    } catch (e) { emit(`JP store search: ${e.message.slice(0, 60)}`); }
 
-      // Strategy B: store-jp.nintendo.com HTML search — nsuids in D{nsuid} links or JSON blobs
-      (async () => {
-        for (const searchQuery of queries) {
-          const q = encodeURIComponent(searchQuery);
-          const label = searchQuery === jpLocalTitle ? `JA: "${searchQuery.slice(0, 20)}"` : `EN: "${searchQuery.slice(0, 20)}"`;
-          try {
-            const res = await axios.get(`https://store-jp.nintendo.com/search/?q=${q}&genre=Game`, {
-              timeout: 10000,
-              headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept-Language': 'ja,en;q=0.9' },
-            });
-            const html = String(res.data);
-            // Extract nsuids from D{nsuid} links AND bare 14-digit numbers in JSON blobs
-            const fromLinks = (html.match(/D(700[0-9]\d{10})/g) || []).map(m => m.slice(1));
-            const fromJson = (html.match(/"nsuid"\s*:\s*"(700[0-9]\d{10})"/g) || []).map(m => m.match(/(\d{14})/)[1]);
-            const ids = [...new Set([...fromLinks, ...fromJson])];
-            emit(`JP store search (${label}): ${ids.length} nsuid(s)${ids.length ? ` [${ids.join(',')}]` : ''}`);
-            if (ids.length) { ids.forEach(addNew); return; }
-          } catch (e) { emit(`JP store search (${label}): ${e.message.slice(0, 60)}`); }
-        }
-      })(),
-
-      // Strategy C: Nintendo JP Solr catalog (may be blocked on Render but worth trying)
-      (async () => {
-        for (const searchQuery of queries) {
-          const q = encodeURIComponent(searchQuery);
-          const { ids } = await searchCatalog(
-            `https://searching.nintendo.co.jp/j01/select?q=${q}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
-            `JP catalog ("${searchQuery.slice(0, 20)}")`
-          );
-          if (ids.length) { ids.forEach(addNew); return; }
-        }
-      })(),
-
-      // Strategy D: JP gap probe — JP nsuids can be 300+ away from US/EU, but probing ±500
-      // in chunks of 50 is only 20 requests and catches most cases
-      (async () => {
-        const base = jpNsuids.length ? jpNsuids : euPrimary.length ? euPrimary : [];
-        if (!base.length) { emit('JP probe: no base'); return; }
-        const JP_GAP = 500n;
-        const probeIds = [...new Set(base.flatMap(b => {
-          const bn = BigInt(b);
-          return Array.from({ length: Number(JP_GAP) }, (_, i) => [String(bn + BigInt(i + 1)), String(bn - BigInt(i + 1))]).flat();
-        }).filter(p => /^700[0-9]\d{10}$/.test(p) && !seen.has(p)))];
-        if (!probeIds.length) return;
-        const chunks = [];
-        for (let i = 0; i < probeIds.length; i += 50) chunks.push(probeIds.slice(i, i + 50));
-        let found = 0;
-        for (const chunk of chunks) {
-          try {
-            const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=JP&lang=ja&ids=${chunk.join(',')}`, { timeout: 20000 });
-            const hits = (res.data?.prices || []).filter(p => p.sales_status !== 'not_found' && (p.regular_price || p.discount_price));
-            hits.forEach(p => { addNew(String(p.title_id)); found++; });
-          } catch (e) { emit(`JP probe chunk: ${e.message.slice(0, 50)}`); break; }
-        }
-        emit(`JP probe ±${JP_GAP} off ${base.length} anchor(s): ${found} found`);
-      })(),
-    ]);
+    // JP catalog — only try if endpoint is reachable (may be blocked on Render)
+    if (jpLocalTitle) {
+      const { ids } = await searchCatalog(
+        `https://searching.nintendo.co.jp/j01/select?q=${q}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
+        `JP catalog (${label})`
+      );
+      ids.forEach(addNew);
+    }
   }
 
   // SG: gap probe off HK nsuids, chunked to avoid 400 errors
@@ -782,19 +626,13 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
     : (euNsuids.length ? euNsuids.reduce((a, b) => BigInt(a) < BigInt(b) ? a : b) : null);
   const euPrimary = anchorEu ? euNsuids.filter(id => { const d = BigInt(id) > BigInt(anchorEu) ? BigInt(id) - BigInt(anchorEu) : BigInt(anchorEu) - BigInt(id); return d <= SAME_RANGE; }) : [];
 
-  // Run HK first so its discovered nsuids can anchor the SG probe.
-  // (asia.com is blocked on Render, so Phase 1 hkNsuids is always empty;
-  //  SG must probe off Phase 2 HK results or fall back to euPrimary.)
-  const hkCountBefore = newNsuids.length;
-  await findHK();
-  const hkPhase2Nsuids = newNsuids.slice(hkCountBefore);
-  const sgBase = hkPhase2Nsuids.length ? hkPhase2Nsuids
-    : hkNsuids.length ? hkNsuids
-    : euPrimary;
-
+  // HK and JP run sequentially: JP re-search uses Japanese title found from first pass
+  // SG and US probes run in parallel since they don't depend on each other
+  const hkBase = hkNsuids.length ? hkNsuids : euPrimary;
   await Promise.all([
+    findHK(),
     findJP(),
-    findSG(sgBase),
+    findSG(hkBase),
     findUS(euPrimary),
   ]);
 

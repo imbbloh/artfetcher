@@ -146,6 +146,23 @@ function toNintendoSlug(name) {
   return String(name).toLowerCase().replace(/[™®©]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
 }
 
+// Normalize game title to consistent title case.
+// Keeps short connector words lowercase unless they start the title.
+const LC_WORDS = new Set(['a','an','the','and','but','or','nor','for','so','yet','at','by','in','of','on','to','up','as','if','vs','via']);
+function toTitleCase(name) {
+  if (!name) return name;
+  return name
+    .replace(/[™®©]/g, '')
+    .trim()
+    .split(/\s+/)
+    .map((w, i) => {
+      const lower = w.toLowerCase();
+      if (i > 0 && LC_WORDS.has(lower)) return lower;
+      return w.charAt(0).toUpperCase() + w.slice(1);
+    })
+    .join(' ');
+}
+
 // ─── Exchange rates ────────────────────────────────────────────────────────────
 
 async function getExchangeRates(emit) {
@@ -483,6 +500,7 @@ async function findNsuidsPhase1(gameUrl, emit) {
   ]);
 
   if (!gameName) gameName = slug;
+  gameName = toTitleCase(gameName);
 
   // Prefer a non-EU 7001 nsuid as usNsuid (Americas eShop, correct anchor for JP probing).
   // Exclude EU catalog nsuids — they are AU/EU region IDs, not US.
@@ -531,8 +549,8 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
       );
       ids.forEach(addNew);
     } else {
-      // Fallback: gap probe off EU nsuids (HK and EU nsuids are typically within ±50)
-      const hkBase = hkNsuids.length ? hkNsuids : euPrimary;
+      // Fallback: gap probe off EU nsuids (or US if EU is empty); HK nsuids typically within ±50
+      const hkBase = hkNsuids.length ? hkNsuids : euOrUs;
       if (!hkBase.length) { emit('HK probe: no base'); return; }
       const HK_GAP = 50n;
       const probeIds = [...new Set(hkBase.flatMap(b => {
@@ -626,9 +644,13 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
     : (euNsuids.length ? euNsuids.reduce((a, b) => BigInt(a) < BigInt(b) ? a : b) : null);
   const euPrimary = anchorEu ? euNsuids.filter(id => { const d = BigInt(id) > BigInt(anchorEu) ? BigInt(id) - BigInt(anchorEu) : BigInt(anchorEu) - BigInt(id); return d <= SAME_RANGE; }) : [];
 
+  // Fall back to usNsuid as probe anchor when EU catalog found nothing
+  const usAnchor = usNsuid ? [usNsuid] : [];
+  const euOrUs = euPrimary.length ? euPrimary : usAnchor;
+
   // HK and JP run sequentially: JP re-search uses Japanese title found from first pass
   // SG and US probes run in parallel since they don't depend on each other
-  const hkBase = hkNsuids.length ? hkNsuids : euPrimary;
+  const hkBase = hkNsuids.length ? hkNsuids : euOrUs;
   await Promise.all([
     findHK(),
     findJP(),

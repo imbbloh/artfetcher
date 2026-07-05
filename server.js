@@ -883,13 +883,15 @@ function startTelegramBot() {
   const GC_FLAG = { USD: '🇺🇸', BRL: '🇧🇷', CAD: '🇨🇦', MXN: '🇲🇽', AUD: '🇦🇺' };
 
   function formatGcPrices() {
-    const lines = ['🎴 *Gift Card Prices* \\(CNY\\)\n'];
+    const cnyToSgd = rateCache?.rates?.['CNY'] ?? null;
+    const rateStr = cnyToSgd ? ` · 1 CNY = ${cnyToSgd.toFixed(4)} SGD` : '';
+    const lines = [`🎴 *Gift Card Prices*${escGc(rateStr)}\n`];
     for (const cur of GC_CURRENCIES) {
       lines.push(`${GC_FLAG[cur] || ''} *${cur}*`);
       for (const [denom, cny] of Object.entries(gcPrices[cur])) {
-        lines.push(cny != null
-          ? `  ${cur} ${denom} → *${escGc(cny)} CNY*`
-          : `  ${cur} ${denom} → _not set_`);
+        if (cny == null) { lines.push(`  ${cur} ${denom} → _not set_`); continue; }
+        const sgd = cnyToSgd ? ` \\(SGD ${escGc((cny * cnyToSgd).toFixed(2))}\\)` : '';
+        lines.push(`  ${cur} ${denom} → *${escGc(cny)} CNY*${sgd}`);
       }
     }
     lines.push('\n_Update with_ `/updategiftcard USD 10 60`');

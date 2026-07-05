@@ -885,38 +885,37 @@ function startTelegramBot() {
 
   function formatGcPrices() {
     const cnyToSgd = rateCache?.rates?.['CNY'] ?? null;
+    const hasSgd = !!cnyToSgd;
 
-    // Build monospace table rows
-    const rows = [];
-    const HEADER = ' Card        CNY' + (cnyToSgd ? '      SGD' : '');
-    const SEP    = '─────────────────' + (cnyToSgd ? '────────' : '');
-    rows.push(HEADER, SEP);
+    // Column widths: Currency(3) Card(7) CNY(6) SGD(7)
+    const SEP = hasSgd ? '───────────────────────────' : '──────────────────';
+    const HDR = hasSgd ? ' Curr  Card     CNY    SGD ' : ' Curr  Card     CNY';
+    const rows = [HDR, SEP];
 
     for (const cur of GC_CURRENCIES) {
-      const sym = GC_SYMBOL[cur] || cur + ' ';
-      let first = true;
+      const sym = GC_SYMBOL[cur] || cur;
       for (const [denom, cny] of Object.entries(gcPrices[cur])) {
-        const prefix = first ? ` ${cur.padEnd(4)}` : '      ';
-        first = false;
-        const card = `${sym}${denom}`.padEnd(7);
+        const curCol = cur.padEnd(4);
+        const cardCol = `${sym}${denom}`.padEnd(8);
         if (cny == null) {
-          rows.push(`${prefix} ${card}  —`);
+          rows.push(` ${curCol} ${cardCol}  —`);
           continue;
         }
-        const cnyStr = String(cny).padStart(6);
-        const sgdStr = cnyToSgd ? `   S$${(cny * cnyToSgd).toFixed(2).padStart(6)}` : '';
-        rows.push(`${prefix} ${card} ${cnyStr}${sgdStr}`);
+        const cnyCol = String(cny).padStart(5);
+        const sgdCol = hasSgd ? `  S$${(cny * cnyToSgd).toFixed(2).padStart(5)}` : '';
+        rows.push(` ${curCol} ${cardCol} ${cnyCol}${sgdCol}`);
       }
       rows.push(SEP);
     }
 
-    const rateNote = cnyToSgd ? `💱 1 CNY ≈ SGD ${cnyToSgd.toFixed(4)}` : '';
+    const rateNote = hasSgd ? `💱 1 CNY ≈ SGD ${cnyToSgd.toFixed(4)}` : '💱 Rate unavailable';
     const table = '```\n' + rows.join('\n') + '\n```';
-    const parts = ['🎴 *Gift Card Prices*'];
-    if (rateNote) parts.push(`_${escGc(rateNote)}_`);
-    parts.push(table);
-    parts.push('_✏️ /updategiftcard USD 10 60_');
-    return parts.join('\n');
+    return [
+      '🎴 *Gift Card Prices*',
+      `_${escGc(rateNote)}_`,
+      table,
+      '_✏️ /updategiftcard USD 10 60_',
+    ].join('\n');
   }
 
   bot.on('message', async (msg) => {
@@ -928,6 +927,7 @@ function startTelegramBot() {
       await handleUrl(chatId, match[0], msg.message_id);
 
     } else if (/^\/giftcards?\b/.test(text)) {
+      if (!rateCache) await getExchangeRates(m => console.log('[gc-rates]', m)).catch(() => {});
       await bot.sendMessage(chatId, formatGcPrices(), { parse_mode: 'MarkdownV2' });
 
     } else if (/^\/updategiftcard\b/.test(text)) {

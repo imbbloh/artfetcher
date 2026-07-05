@@ -885,27 +885,38 @@ function startTelegramBot() {
 
   function formatGcPrices() {
     const cnyToSgd = rateCache?.rates?.['CNY'] ?? null;
-    const divider = '─────────────────────';
-    const lines = ['🎴 *Gift Card Prices*'];
-    if (cnyToSgd) lines.push(`_💱 1 CNY ≈ SGD ${escGc(cnyToSgd.toFixed(4))}_`);
-    lines.push(escGc(divider));
+
+    // Build monospace table rows
+    const rows = [];
+    const HEADER = ' Card        CNY' + (cnyToSgd ? '      SGD' : '');
+    const SEP    = '─────────────────' + (cnyToSgd ? '────────' : '');
+    rows.push(HEADER, SEP);
 
     for (const cur of GC_CURRENCIES) {
       const sym = GC_SYMBOL[cur] || cur + ' ';
-      lines.push(`${GC_FLAG[cur]} *${cur}*`);
+      let first = true;
       for (const [denom, cny] of Object.entries(gcPrices[cur])) {
-        if (cny == null) { lines.push(`  ${escGc(sym + denom)}  _not set_`); continue; }
-        const sgdVal = cnyToSgd ? (cny * cnyToSgd).toFixed(2) : null;
-        const label = `${sym}${denom}`.padEnd(6);
-        const cnyPart = `${cny} CNY`.padEnd(10);
-        const sgdPart = sgdVal ? `→ *S\\$${escGc(sgdVal)}*` : '';
-        lines.push(`  \`${label}\`  ${escGc(cnyPart)}  ${sgdPart}`);
+        const prefix = first ? ` ${cur.padEnd(4)}` : '      ';
+        first = false;
+        const card = `${sym}${denom}`.padEnd(7);
+        if (cny == null) {
+          rows.push(`${prefix} ${card}  —`);
+          continue;
+        }
+        const cnyStr = String(cny).padStart(6);
+        const sgdStr = cnyToSgd ? `   S$${(cny * cnyToSgd).toFixed(2).padStart(6)}` : '';
+        rows.push(`${prefix} ${card} ${cnyStr}${sgdStr}`);
       }
+      rows.push(SEP);
     }
 
-    lines.push(escGc(divider));
-    lines.push('_✏️ /updategiftcard USD 10 60_');
-    return lines.join('\n');
+    const rateNote = cnyToSgd ? `💱 1 CNY ≈ SGD ${cnyToSgd.toFixed(4)}` : '';
+    const table = '```\n' + rows.join('\n') + '\n```';
+    const parts = ['🎴 *Gift Card Prices*'];
+    if (rateNote) parts.push(`_${escGc(rateNote)}_`);
+    parts.push(table);
+    parts.push('_✏️ /updategiftcard USD 10 60_');
+    return parts.join('\n');
   }
 
   bot.on('message', async (msg) => {

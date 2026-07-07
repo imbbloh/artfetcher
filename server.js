@@ -913,9 +913,9 @@ function startTelegramBot() {
     if (match) {
       await handleUrl(chatId, match[0], msg.message_id);
 
-    } else if (/^\d[\d.,]*\s*(?:[A-Z]{3}|yen|hkd)\b|^(?:[A-Z]{3}|yen|hkd)\s*\d[\d.,]*/i.test(text) && !/^\//.test(text)) {
-      // Currency conversion: "60 BRL", "7920 yen", "HKD 50", etc.
-      const ALIASES = { yen: 'JPY', hkd: 'HKD' };
+    } else if (/^\d[\d.,]*\s*(?:[A-Z]{3}|yen|hkd|yuan)\b|^(?:[A-Z]{3}|yen|hkd|yuan)\s*\d[\d.,]*/i.test(text) && !/^\//.test(text)) {
+      // Currency conversion: "60 BRL", "7920 yen", "HKD 50", "100 yuan", etc.
+      const ALIASES = { yen: 'JPY', hkd: 'HKD', yuan: 'CNY' };
       const cm = text.replace(/,/g, '').match(/([\d.]+)\s*([A-Za-z]+)|([A-Za-z]+)\s*([\d.]+)/);
       if (cm) {
         const amount = parseFloat(cm[1] || cm[4]);

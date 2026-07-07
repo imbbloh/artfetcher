@@ -924,11 +924,42 @@ function startTelegramBot() {
         if (!rates || !rates[cur]) {
           await bot.sendMessage(chatId, `⚠️ Unknown currency: *${escGc(cur)}*`, { parse_mode: 'MarkdownV2' });
         } else {
-          const sgd = (amount * rates[cur]).toFixed(2);
-          const source = escGc(rateCache.source || 'ECB');
-          await bot.sendMessage(chatId,
-            `💱 *${escGc(amount.toString())} ${escGc(cur)}* \\= *SGD ${escGc(sgd)}*\n_Rate: ${source}_`,
-            { parse_mode: 'MarkdownV2' });
+          const cnyToSgd = rates['CNY'];
+          const hasDenoms = cur in gcPrices && Object.keys(gcPrices[cur]).length > 0;
+
+          if (hasDenoms && cnyToSgd) {
+            // Gift-card path: find minimum cards needed, compute CNY → SGD
+            const denoms = Object.keys(gcPrices[cur]).map(Number).sort((a, b) => a - b);
+            const gcAmount = minGiftCardAmount(amount, denoms);
+            const cny = minGiftCardCNY(gcAmount, cur);
+            const sgd = cny !== null ? (cny * cnyToSgd).toFixed(2) : null;
+
+            // Build card breakdown
+            const denomPrices = Object.entries(gcPrices[cur]).map(([d, c]) => ({ d: Number(d), c }));
+            const breakdown = [];
+            let remaining = gcAmount;
+            for (const { d, c } of denomPrices.sort((a, b) => b.d - a.d)) {
+              const count = Math.floor(remaining / d);
+              if (count > 0) { breakdown.push(`${count}×${cur} ${d}`); remaining -= count * d; }
+            }
+
+            const lines = [
+              `🎴 *${escGc(cur)} ${escGc(String(amount))}* gift card cost`,
+              ``,
+              `🃏 Cards: ${escGc(breakdown.join(' \\+ '))}`,
+              `💴 CNY: *${escGc(String(cny))} CNY*`,
+              sgd ? `💵 SGD: *S\\$${escGc(sgd)}*` : '',
+              ``,
+              `_Direct rate: ${escGc(cur)} ${escGc(String(amount))} ≈ SGD ${escGc((amount * rates[cur]).toFixed(2))}_`,
+            ].filter(l => l !== '');
+            await bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'MarkdownV2' });
+          } else {
+            // Direct conversion for currencies without gift card pricing (JPY, HKD, SGD, etc.)
+            const sgd = (amount * rates[cur]).toFixed(2);
+            await bot.sendMessage(chatId,
+              `💱 *${escGc(String(amount))} ${escGc(cur)}* \\= *SGD ${escGc(sgd)}*\n_Rate: ${escGc(rateCache.source || 'ECB')}_`,
+              { parse_mode: 'MarkdownV2' });
+          }
         }
       }
 

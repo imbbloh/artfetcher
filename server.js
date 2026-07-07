@@ -913,12 +913,14 @@ function startTelegramBot() {
     if (match) {
       await handleUrl(chatId, match[0], msg.message_id);
 
-    } else if (/^\d[\d.,]*\s*[A-Z]{3}$|^[A-Z]{3}\s*\d[\d.,]*/i.test(text) && !/^\//.test(text)) {
-      // Currency conversion: "60 BRL", "60BRL", "BRL 60", "USD 10.50", etc.
-      const cm = text.replace(/,/g, '').match(/([\d.]+)\s*([A-Z]{3})|([A-Z]{3})\s*([\d.]+)/i);
+    } else if (/^\d[\d.,]*\s*(?:[A-Z]{3}|yen|hkd)\b|^(?:[A-Z]{3}|yen|hkd)\s*\d[\d.,]*/i.test(text) && !/^\//.test(text)) {
+      // Currency conversion: "60 BRL", "7920 yen", "HKD 50", etc.
+      const ALIASES = { yen: 'JPY', hkd: 'HKD' };
+      const cm = text.replace(/,/g, '').match(/([\d.]+)\s*([A-Za-z]+)|([A-Za-z]+)\s*([\d.]+)/);
       if (cm) {
         const amount = parseFloat(cm[1] || cm[4]);
-        const cur = (cm[2] || cm[3]).toUpperCase();
+        const rawCur = (cm[2] || cm[3]).toLowerCase();
+        const cur = (ALIASES[rawCur] || rawCur.toUpperCase());
         if (!rateCache) await getExchangeRates(m => console.log('[conv-rates]', m)).catch(() => {});
         const rates = rateCache?.rates;
         if (!rates || !rates[cur]) {

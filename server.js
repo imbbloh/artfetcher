@@ -944,20 +944,17 @@ function startTelegramBot() {
             }
 
             const lines = [
-              `🎴 *${escGc(cur)} ${escGc(String(amount))}* gift card cost`,
-              ``,
-              `🃏 Cards: ${escGc(breakdown.join(' \\+ '))}`,
-              `💴 CNY: *${escGc(String(cny))} CNY*`,
-              sgd ? `💵 SGD: *S\\$${escGc(sgd)}*` : '',
-              ``,
-              `_Direct rate: ${escGc(cur)} ${escGc(String(amount))} ≈ SGD ${escGc((amount * rates[cur]).toFixed(2))}_`,
-            ].filter(l => l !== '');
+              `🎴 *${escGc(String(amount))} ${escGc(cur)}* via gift cards`,
+              `🃏 ${escGc(breakdown.join(' + '))}`,
+              `💴 *${escGc(String(cny))} CNY*`,
+              sgd ? `💵 *S\\$${escGc(sgd)}*` : `_SGD rate unavailable_`,
+            ];
             await bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'MarkdownV2' });
           } else {
-            // Direct conversion for currencies without gift card pricing (JPY, HKD, SGD, etc.)
+            // Direct live rate for currencies without gift card pricing (JPY, HKD, SGD, etc.)
             const sgd = (amount * rates[cur]).toFixed(2);
             await bot.sendMessage(chatId,
-              `💱 *${escGc(String(amount))} ${escGc(cur)}* \\= *SGD ${escGc(sgd)}*\n_Rate: ${escGc(rateCache.source || 'ECB')}_`,
+              `💱 *${escGc(String(amount))} ${escGc(cur)}* \\= *S\\$${escGc(sgd)}*\n_Live rate \\(${escGc(rateCache.source || 'ECB')}\\)_`,
               { parse_mode: 'MarkdownV2' });
           }
         }

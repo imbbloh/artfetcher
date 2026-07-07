@@ -913,6 +913,25 @@ function startTelegramBot() {
     if (match) {
       await handleUrl(chatId, match[0], msg.message_id);
 
+    } else if (/^\d[\d.,]*\s*[A-Z]{3}$|^[A-Z]{3}\s*\d[\d.,]*/i.test(text) && !/^\//.test(text)) {
+      // Currency conversion: "60 BRL", "60BRL", "BRL 60", "USD 10.50", etc.
+      const cm = text.replace(/,/g, '').match(/([\d.]+)\s*([A-Z]{3})|([A-Z]{3})\s*([\d.]+)/i);
+      if (cm) {
+        const amount = parseFloat(cm[1] || cm[4]);
+        const cur = (cm[2] || cm[3]).toUpperCase();
+        if (!rateCache) await getExchangeRates(m => console.log('[conv-rates]', m)).catch(() => {});
+        const rates = rateCache?.rates;
+        if (!rates || !rates[cur]) {
+          await bot.sendMessage(chatId, `⚠️ Unknown currency: *${escGc(cur)}*`, { parse_mode: 'MarkdownV2' });
+        } else {
+          const sgd = (amount * rates[cur]).toFixed(2);
+          const source = escGc(rateCache.source || 'ECB');
+          await bot.sendMessage(chatId,
+            `💱 *${escGc(amount.toString())} ${escGc(cur)}* \\= *SGD ${escGc(sgd)}*\n_Rate: ${source}_`,
+            { parse_mode: 'MarkdownV2' });
+        }
+      }
+
     } else if (/^\/giftcards?\b/.test(text)) {
       if (!rateCache) await getExchangeRates(m => console.log('[gc-rates]', m)).catch(() => {});
       await bot.sendMessage(chatId, formatGcPrices(), { parse_mode: 'MarkdownV2' });

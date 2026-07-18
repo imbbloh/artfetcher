@@ -1,0 +1,16 @@
+# render.yaml — place at the ROOT of the imbbloh/artfetcher repo
+# Then in the NEW Render account: New > Blueprint > pick this repo.
+# Render reads this file and recreates the service. You'll be prompted
+# to paste the secret value for TELEGRAM_BOT_TOKEN (it is not stored here).
+services:
+  - type: web
+    name: artfetcher
+    runtime: docker
+    repo: https://github.com/imbbloh/artfetcher
+    branch: claude/game-price-scraper-countries-83g1ek
+    region: singapore
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false   # sync:false = secret, you enter it in the dashboard

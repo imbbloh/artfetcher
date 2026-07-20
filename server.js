@@ -962,6 +962,9 @@ function startTelegramBot() {
         }
       }
 
+    } else if (/^\/solver\b/.test(text)) {
+      await bot.sendMessage(chatId, '🧩 *eShop Price Solver*\nhttps://imbbloh\\.github\\.io/eshop\\-price\\-solver/', { parse_mode: 'MarkdownV2' });
+
     } else if (/^\/giftcards?\b/.test(text)) {
       if (!rateCache) await getExchangeRates(m => console.log('[gc-rates]', m)).catch(() => {});
       await bot.sendMessage(chatId, formatGcPrices(), { parse_mode: 'MarkdownV2' });

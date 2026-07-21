@@ -91,6 +91,18 @@ let algoliaKeyCache = { key: null, time: 0 };
 const ALGOLIA_KEY_TTL = 12 * 60 * 60 * 1000;
 const ALGOLIA_APP_ID = 'U3B6GR4UA3';
 
+// /solver command — pulls pre-scraped game data from the eshop-price-solver
+// site's own daily-refreshed dataset rather than re-scraping here.
+const SOLVER_DATA_BASE = 'https://imbbloh.github.io/eshop-price-solver/data';
+const SOLVER_REGIONS = {
+  USD: { region: 'us', currency: 'US$ ' },
+  CAD: { region: 'ca', currency: 'CA$ ' },
+  MXN: { region: 'mx', currency: 'MX$ ' },
+  BRL: { region: 'br', currency: 'R$ ' },
+};
+const solverDataCache = new Map(); // region -> { games, fetchedAt }
+const SOLVER_CACHE_TTL = 4 * 60 * 60 * 1000;
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 app.use(express.static(path.join(__dirname, 'public')));
@@ -177,6 +189,48 @@ async function getExchangeRates(emit) {
   rateCacheTime = now;
   emit('Exchange rates ready.');
   return rateCache;
+}
+
+// ─── Price solver ──────────────────────────────────────────────────────────────
+
+async function fetchSolverGames(region) {
+  const cached = solverDataCache.get(region);
+  const now = Date.now();
+  if (cached && now - cached.fetchedAt < SOLVER_CACHE_TTL) return cached.games;
+  const res = await axios.get(`${SOLVER_DATA_BASE}/${region}.json`, { timeout: 10000 });
+  const games = (res.data.games || []).map(g => ({ title: g.title, price: Math.round(g.price * 100), url: g.url }));
+  solverDataCache.set(region, { games, fetchedAt: now });
+  return games;
+}
+
+// Exact subset-sum search (iterative deepening, prefix-sum pruning) — same
+// algorithm as the web solver at imbbloh.github.io/eshop-price-solver.
+function solveCombos(games, targetCents, want) {
+  const pool = games.filter(g => g.price > 0 && g.price <= targetCents).sort((a, b) => a.price - b.price);
+  const pre = [0];
+  for (let i = 0; i < pool.length; i++) pre.push(pre[i] + pool[i].price);
+  const results = [];
+  let nodes = 0;
+  const BUDGET = 30_000_000;
+  const MAX_LEN = 15;
+
+  function searchLen(L) {
+    const path = [];
+    (function dfs(i, sum, r) {
+      if (results.length >= want || nodes > BUDGET) return;
+      if (r === 0) { if (sum === targetCents) results.push(path.slice()); return; }
+      for (let k = i; k + r <= pool.length; k++) {
+        nodes++;
+        const minSum = sum + (pre[k + r] - pre[k]);
+        if (minSum > targetCents) break;
+        path.push(pool[k]); dfs(k + 1, sum + pool[k].price, r - 1); path.pop();
+        if (results.length >= want) return;
+      }
+    })(0, 0, L);
+  }
+
+  for (let L = 1; L <= MAX_LEN && results.length < want && nodes <= BUDGET; L++) searchLen(L);
+  return results;
 }
 
 // ─── Algolia key (Nintendo.com JS bundle scan) ────────────────────────────────
@@ -963,7 +1017,51 @@ function startTelegramBot() {
       }
 
     } else if (/^\/solver\b/.test(text)) {
-      await bot.sendMessage(chatId, '🧩 *eShop Price Solver*\nhttps://imbbloh\\.github\\.io/eshop\\-price\\-solver/', { parse_mode: 'MarkdownV2' });
+      const sm = text.match(/^\/solver\s+([A-Za-z]{3})\s+([\d.,]+)/i);
+      if (!sm) {
+        await bot.sendMessage(chatId,
+          '🧩 *eShop Price Solver*\nFinds up to 5 combinations of eShop games whose prices add up exactly to your target\\.\n\n' +
+          '*Usage:* `/solver USD 5.05`\nSupported: ' + escGc(Object.keys(SOLVER_REGIONS).join(', ')) + '\n\n' +
+          'Full tool: https://imbbloh\\.github\\.io/eshop\\-price\\-solver/',
+          { parse_mode: 'MarkdownV2' });
+        return;
+      }
+      const solverCur = sm[1].toUpperCase();
+      const solverAmount = parseFloat(sm[2].replace(',', '.'));
+      const solverConf = SOLVER_REGIONS[solverCur];
+      if (!solverConf || !isFinite(solverAmount) || solverAmount <= 0) {
+        await bot.sendMessage(chatId,
+          `⚠️ Unsupported currency or amount\\. Supported: ${escGc(Object.keys(SOLVER_REGIONS).join(', '))}`,
+          { parse_mode: 'MarkdownV2' });
+        return;
+      }
+      const statusMsg = await bot.sendMessage(chatId, '🧩 Solving\\.\\.\\.', { parse_mode: 'MarkdownV2' });
+      try {
+        const games = await fetchSolverGames(solverConf.region);
+        const targetCents = Math.round(solverAmount * 100);
+        const results = solveCombos(games, targetCents, 5);
+        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+        if (!results.length) {
+          await bot.sendMessage(chatId,
+            `❌ No exact combination adds up to *${escGc(solverCur)} ${escGc(solverAmount.toFixed(2))}*\\.`,
+            { parse_mode: 'MarkdownV2' });
+          return;
+        }
+        const MEDAL = ['🥇', '🥈', '🥉'];
+        const fmt = c => solverConf.currency + (c / 100).toFixed(2);
+        const lines = [`🧩 *${escGc(solverCur)} ${escGc(solverAmount.toFixed(2))}* — ${results.length} combination${results.length > 1 ? 's' : ''}:`, ''];
+        results.forEach((combo, idx) => {
+          const sum = combo.reduce((a, g) => a + g.price, 0);
+          const medal = MEDAL[idx] || `\\#${idx + 1}`;
+          lines.push(`${medal} ${combo.length} game${combo.length > 1 ? 's' : ''} \\(${escGc(fmt(sum))}\\)`);
+          for (const g of combo) lines.push(`   • [${escGc(g.title)}](${g.url}) — ${escGc(fmt(g.price))}`);
+          lines.push('');
+        });
+        await bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'MarkdownV2', disable_web_page_preview: true });
+      } catch (err) {
+        await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+        await bot.sendMessage(chatId, `❌ Solver error: ${err.message}`);
+      }
 
     } else if (/^\/giftcards?\b/.test(text)) {
       if (!rateCache) await getExchangeRates(m => console.log('[gc-rates]', m)).catch(() => {});
@@ -1031,6 +1129,7 @@ function startTelegramBot() {
         '👋 Send me a game link and I\'ll show you the best prices in SGD\\.\n\n' +
         '*Supported URLs:*\n• eshop\\-prices\\.com/games/\\.\\.\\.\n• dekudeals\\.com/items/\\.\\.\\.\n• nintendo\\.com/\\*/store/products/\\.\\.\\.\n\n' +
         '*Gift card commands:*\n• `/giftcards` — view all current CNY prices\n• `/updategiftcard USD 10 60` — update an existing denomination\n• `/addgiftcard USD 25 150` — add a new denomination\n\n' +
+        '*Price solver:*\n• `/solver USD 5\\.05` — find up to 5 combos of games that add up exactly to that amount \\(USD, CAD, MXN, BRL\\)\n\n' +
         '*Example:*\n`https://eshop\\-prices\\.com/games/17496\\-cyberpunk\\-2077\\-ultimate\\-edition`',
         { parse_mode: 'MarkdownV2' }
       );

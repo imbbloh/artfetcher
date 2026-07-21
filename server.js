@@ -404,7 +404,7 @@ async function findNsuidsPhase1(gameUrl, emit) {
   emit(`Searching for "${slug}"...`);
 
   // EU catalog + Algolia key in parallel
-  const [, algoliaKey] = await Promise.all([
+  const [,,, algoliaKey] = await Promise.all([
     (async () => {
       try {
         const res = await axios.get(`https://searching.nintendo-europe.com/en/select?q=${q}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`, { timeout: 12000 });
@@ -916,24 +916,31 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
 // ─── Nintendo price API ───────────────────────────────────────────────────────
 
 async function getNintendoPrices(nsuids, emit) {
-  emit(`Querying Nintendo eShop API (${nsuids.length} nsuids)...`);
-  const idsParam = nsuids.join(',');
+  if (!nsuids.length) return Object.fromEntries(Object.keys(COUNTRY_CODE).map(c => [c, null]));
+  // Nintendo price API max 50 IDs per request — chunk if needed
+  const CHUNK = 50;
+  const chunks = [];
+  for (let i = 0; i < nsuids.length; i += CHUNK) chunks.push(nsuids.slice(i, i + CHUNK));
+  emit(`Querying Nintendo eShop API (${nsuids.length} nsuids, ${chunks.length} chunk(s))...`);
+
   const entries = await Promise.all(
     Object.entries(COUNTRY_CODE).map(async ([country, code]) => {
-      try {
-        const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=${code}&lang=en&ids=${idsParam}`, { timeout: 20000 });
-        const prices = res.data?.prices || [];
-        const found = prices.filter(p => p.sales_status !== 'not_found' && (p.discount_price || p.regular_price));
-        if (country === 'US') emit(`US price API: ${prices.length} total, ${found.length} priced, ${prices.length - found.length} not_found`);
-        for (const p of prices) {
-          if (p.sales_status === 'not_found') continue;
-          const price = p.discount_price || p.regular_price;
-          if (!price) continue;
-          const amount = parseFloat(price.raw_value ?? price.amount);
-          return [country, { amount, currency: price.currency, onSale: !!p.discount_price, nsuid: String(p.title_id) }];
-        }
-        return [country, null];
-      } catch { return [country, null]; }
+      for (const chunk of chunks) {
+        try {
+          const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=${code}&lang=en&ids=${chunk.join(',')}`, { timeout: 20000 });
+          const prices = res.data?.prices || [];
+          const found = prices.filter(p => p.sales_status !== 'not_found' && (p.discount_price || p.regular_price));
+          if (country === 'US') emit(`US price API: ${prices.length} total, ${found.length} priced, ${prices.length - found.length} not_found`);
+          for (const p of prices) {
+            if (p.sales_status === 'not_found') continue;
+            const price = p.discount_price || p.regular_price;
+            if (!price) continue;
+            const amount = parseFloat(price.raw_value ?? price.amount);
+            return [country, { amount, currency: price.currency, onSale: !!p.discount_price, nsuid: String(p.title_id) }];
+          }
+        } catch { /* try next chunk */ }
+      }
+      return [country, null];
     })
   );
   return Object.fromEntries(entries);

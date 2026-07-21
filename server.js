@@ -583,7 +583,10 @@ async function findNsuidsPhase1(gameUrl, emit) {
 // file from local disk: no network fetch, no multi-second latency, and no risk
 // of holding an 80MB+ parsed object in memory during a live Telegram request.
 const TITLEDB_REGIONS = { JP: 'titledb-jp.json', HK: 'titledb-hk.json' };
-const titledbCache = new Map(); // region -> [{nsuid, name}]
+const titledbCache = new Map(); // region -> [{nsuid, name, nameEn?}]
+let titledbXref = null;       // titleId -> { jp?, hk?, us? }
+// usNsuid -> titleId reverse map, built lazily from xref
+let usNsuidToTitleId = null;
 
 function loadTitledb(region, emit) {
   const cached = titledbCache.get(region);
@@ -592,15 +595,45 @@ function loadTitledb(region, emit) {
   if (!file) return [];
   try {
     const fs = require('fs');
-    const filePath = path.join(__dirname, 'data', file);
-    const entries = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const entries = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', file), 'utf8'));
     titledbCache.set(region, entries);
-    emit(`titledb (${region}): ${entries.length} titles loaded from ${file}`);
+    emit(`titledb (${region}): ${entries.length} titles loaded`);
     return entries;
   } catch (e) {
     emit(`titledb (${region}): ${e.message.slice(0, 60)}`);
     return [];
   }
+}
+
+function loadXref(emit) {
+  if (titledbXref) return titledbXref;
+  try {
+    const fs = require('fs');
+    titledbXref = JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'titledb-xref.json'), 'utf8'));
+    // Build reverse map: US nsuid -> titleId
+    usNsuidToTitleId = {};
+    for (const [titleId, v] of Object.entries(titledbXref))
+      if (v.us) usNsuidToTitleId[v.us] = titleId;
+    emit(`titledb xref: ${Object.keys(titledbXref).length} title IDs loaded`);
+  } catch (e) {
+    titledbXref = {};
+    usNsuidToTitleId = {};
+    emit(`titledb xref: ${e.message.slice(0, 60)}`);
+  }
+  return titledbXref;
+}
+
+// Given a known US NSUID, look up the JP or HK NSUID via shared title ID.
+function findNsuidViaXref(usNsuid, region, emit) {
+  if (!usNsuid) return null;
+  loadXref(emit);
+  const titleId = usNsuidToTitleId[usNsuid];
+  if (!titleId) { emit(`xref: US nsuid ${usNsuid} not in xref`); return null; }
+  const entry = titledbXref[titleId];
+  const nsuid = region === 'JP' ? entry?.jp : entry?.hk;
+  if (nsuid) emit(`xref: ${region} nsuid ${nsuid} (titleId ${titleId})`);
+  else emit(`xref: no ${region} entry for titleId ${titleId}`);
+  return nsuid || null;
 }
 
 // Best-effort match: works well for Western titles kept untranslated in JP/HK
@@ -612,8 +645,8 @@ function loadTitledb(region, emit) {
 // variants all match the same words too, but the base game consistently has
 // the shortest name, and returning every variant risks getNintendoPrices()
 // picking a non-base SKU's price instead of the base game's.
-async function findNsuidsViaTitledb(region, searchName, emit) {
-  const entries = await loadTitledb(region, emit);
+function findNsuidsViaTitledb(region, searchName, emit) {
+  const entries = loadTitledb(region, emit);
   if (!entries.length || !searchName) return [];
   const words = searchName.toLowerCase().split(/\W+/).filter(w => w && !LC_WORDS.has(w));
   if (!words.length) return [];
@@ -660,16 +693,17 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
     } catch (e) { emit(`${label}: ${e.message.slice(0, 50)}`); return { ids: [], localTitles: [] }; }
   }
 
-  // HK: search zh_HK catalog with Chinese title from Phase 1.
-  // Falls back to gap probe off EU nsuids when catalog is unreachable (blocked on Render).
-  // If both come up empty, titledb is the last resort.
   async function findHK() {
-    // titledb first — fast local lookup, no network dependency
-    const tdIds = await findNsuidsViaTitledb('HK', hkLocalTitle || gameName, emit);
+    // 1. xref: US NSUID -> title ID -> HK NSUID (most reliable)
+    const xrefId = findNsuidViaXref(usNsuid, 'HK', emit);
+    if (xrefId) { addNew(xrefId); return; }
+
+    // 2. titledb word match (works for games in titledb but not in US catalog)
+    const tdIds = findNsuidsViaTitledb('HK', hkLocalTitle || gameName, emit);
     tdIds.forEach(addNew);
     if (tdIds.length) return;
 
-    // Fallback: live catalog search or gap probe
+    // 3. Live catalog search or gap probe off EU/US anchor
     if (hkLocalTitle) {
       const zhQ = encodeURIComponent(hkLocalTitle);
       const { ids } = await searchCatalog(
@@ -690,25 +724,28 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
             const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=HK&lang=zh&ids=${probeIds.join(',')}`, { timeout: 20000 });
             const hits = (res.data?.prices || []).filter(p => p.sales_status !== 'not_found' && (p.regular_price || p.discount_price));
             hits.forEach(p => addNew(String(p.title_id)));
-            emit(`HK probe (fallback): ${hits.length} found`);
+            emit(`HK probe: ${hits.length} found`);
           } catch (e) { emit(`HK probe: ${e.message.slice(0, 50)}`); }
         } else emit('HK probe: no base');
       } else emit('HK probe: no base');
     }
   }
 
-  // JP: titledb first, then live catalog/store-jp as fallback.
   async function findJP() {
     const searchQuery = jpLocalTitle || gameName;
     const label = jpLocalTitle ? `JA: "${jpLocalTitle.slice(0, 20)}"` : `EN: "${gameName.slice(0, 20)}"`;
     const q = encodeURIComponent(searchQuery);
 
-    // titledb first — fast local lookup, no network dependency
-    const tdIds = await findNsuidsViaTitledb('JP', searchQuery, emit);
+    // 1. xref: US NSUID -> title ID -> JP NSUID (most reliable)
+    const xrefId = findNsuidViaXref(usNsuid, 'JP', emit);
+    if (xrefId) { addNew(xrefId); return; }
+
+    // 2. titledb word match (works for games in titledb but not in US catalog)
+    const tdIds = findNsuidsViaTitledb('JP', searchQuery, emit);
     tdIds.forEach(addNew);
     if (tdIds.length) return;
 
-    // Fallback: store-jp search (accessible from Render)
+    // 3. store-jp search (accessible from Render)
     try {
       const res = await axios.get(`https://store-jp.nintendo.com/search/?q=${q}&genre=Game`, {
         timeout: 10000,
@@ -717,15 +754,35 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
       const ids = [...new Set((String(res.data).match(/D(700[0-9]\d{10})/g) || []).map(m => m.slice(1)))];
       emit(`JP store search (${label}): ${ids.length} nsuid(s)${ids.length ? ` [${ids.join(',')}]` : ''}`);
       ids.forEach(addNew);
+      if (ids.length) return;
     } catch (e) { emit(`JP store search: ${e.message.slice(0, 60)}`); }
 
-    // JP catalog — only try if endpoint is reachable (may be blocked on Render)
+    // 4. JP catalog (may be blocked on Render)
     if (jpLocalTitle) {
       const { ids } = await searchCatalog(
         `https://searching.nintendo.co.jp/j01/select?q=${q}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
         `JP catalog (${label})`
       );
       ids.forEach(addNew);
+      if (ids.length) return;
+    }
+
+    // 5. Gap probe off US NSUID (catches new titles not yet in titledb)
+    if (usNsuid) {
+      const JP_GAP = 50n;
+      const bn = BigInt(usNsuid);
+      const probeIds = [...new Set(
+        Array.from({ length: Number(JP_GAP) }, (_, i) => [String(bn + BigInt(i + 1)), String(bn - BigInt(i + 1))]).flat()
+          .filter(p => /^700[0-9]\d{10}$/.test(p) && !seen.has(p))
+      )];
+      if (probeIds.length) {
+        try {
+          const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=JP&lang=ja&ids=${probeIds.join(',')}`, { timeout: 20000 });
+          const hits = (res.data?.prices || []).filter(p => p.sales_status !== 'not_found' && (p.regular_price || p.discount_price));
+          hits.forEach(p => addNew(String(p.title_id)));
+          emit(`JP probe (off US nsuid): ${hits.length} found`);
+        } catch (e) { emit(`JP probe: ${e.message.slice(0, 50)}`); }
+      }
     }
   }
 

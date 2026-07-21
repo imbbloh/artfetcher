@@ -731,7 +731,7 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
     }
   }
 
-  async function findJP() {
+  async function findJP(hkBase = []) {
     const searchQuery = jpLocalTitle || gameName;
     const label = jpLocalTitle ? `JA: "${jpLocalTitle.slice(0, 20)}"` : `EN: "${gameName.slice(0, 20)}"`;
     const q = encodeURIComponent(searchQuery);
@@ -781,8 +781,26 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
           const hits = (res.data?.prices || []).filter(p => p.sales_status !== 'not_found' && (p.regular_price || p.discount_price));
           hits.forEach(p => addNew(String(p.title_id)));
           emit(`JP probe (off US nsuid): ${hits.length} found`);
-        } catch (e) { emit(`JP probe: ${e.message.slice(0, 50)}`); }
+          if (hits.length) return;
+        } catch (e) { emit(`JP probe (US): ${e.message.slice(0, 50)}`); }
       }
+    }
+
+    // 6. Gap probe off HK NSUIDs — JP and HK NSUIDs are often 1-2 apart
+    if (hkBase.length) {
+      const JP_GAP = 10n;
+      const probeIds = [...new Set(hkBase.flatMap(b => {
+        const bn = BigInt(b);
+        return Array.from({ length: Number(JP_GAP) }, (_, i) => [String(bn + BigInt(i + 1)), String(bn - BigInt(i + 1))]).flat();
+      }).filter(p => /^700[0-9]\d{10}$/.test(p) && !seen.has(p)))].slice(0, 50);
+      if (probeIds.length) {
+        try {
+          const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=JP&lang=ja&ids=${probeIds.join(',')}`, { timeout: 20000 });
+          const hits = (res.data?.prices || []).filter(p => p.sales_status !== 'not_found' && (p.regular_price || p.discount_price));
+          hits.forEach(p => addNew(String(p.title_id)));
+          emit(`JP probe (off HK nsuid): ${hits.length} found`);
+        } catch (e) { emit(`JP probe (HK): ${e.message.slice(0, 50)}`); }
+      } else emit('JP probe (HK): no base');
     }
   }
 
@@ -838,15 +856,13 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
   const usAnchor = usNsuid ? [usNsuid] : [];
   const euOrUs = euPrimary.length ? euPrimary : usAnchor;
 
-  // HK and JP run sequentially: JP re-search uses Japanese title found from first pass
-  // SG and US probes run in parallel since they don't depend on each other
-  const hkBase = hkNsuids.length ? hkNsuids : euOrUs;
-  await Promise.all([
-    findHK(),
-    findJP(),
-    findSG(hkBase),
-    findUS(euPrimary),
-  ]);
+  // HK runs first so its NSUIDs can be used as a JP probe base
+  await Promise.all([findHK(), findUS(euPrimary)]);
+  // JP runs after HK — can probe off HK NSUIDs if other methods fail
+  const hkFound = newNsuids.filter(id => hkNsuids.includes(id) || seen.has(id));
+  // Collect all HK NSUIDs found so far (from Phase 1 + Phase 2 findHK)
+  const allHkNsuids = [...new Set([...hkNsuids, ...newNsuids.filter(id => /^700[0-9]\d{10}$/.test(id))])];
+  await Promise.all([findJP(allHkNsuids), findSG(allHkNsuids.length ? allHkNsuids : (hkNsuids.length ? hkNsuids : euOrUs))]);
 
   emit(`Phase 2 done: ${newNsuids.length} additional nsuid(s)`);
   return newNsuids;

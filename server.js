@@ -655,7 +655,12 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
   // Falls back to gap probe off EU nsuids when catalog is unreachable (blocked on Render).
   // If both come up empty, titledb is the last resort.
   async function findHK() {
-    let found = false;
+    // titledb first — fast local lookup, no network dependency
+    const tdIds = await findNsuidsViaTitledb('HK', hkLocalTitle || gameName, emit);
+    tdIds.forEach(addNew);
+    if (tdIds.length) return;
+
+    // Fallback: live catalog search or gap probe
     if (hkLocalTitle) {
       const zhQ = encodeURIComponent(hkLocalTitle);
       const { ids } = await searchCatalog(
@@ -663,9 +668,7 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
         `HK search (ZH: "${hkLocalTitle.slice(0, 20)}")`
       );
       ids.forEach(addNew);
-      found = ids.length > 0;
     } else {
-      // Fallback: gap probe off EU nsuids (or US if EU is empty); HK nsuids typically within ±50
       const hkBase = hkNsuids.length ? hkNsuids : euOrUs;
       if (hkBase.length) {
         const HK_GAP = 50n;
@@ -679,27 +682,24 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
             const hits = (res.data?.prices || []).filter(p => p.sales_status !== 'not_found' && (p.regular_price || p.discount_price));
             hits.forEach(p => addNew(String(p.title_id)));
             emit(`HK probe (fallback): ${hits.length} found`);
-            found = hits.length > 0;
           } catch (e) { emit(`HK probe: ${e.message.slice(0, 50)}`); }
         } else emit('HK probe: no base');
       } else emit('HK probe: no base');
     }
-    if (!found) {
-      const tdIds = await findNsuidsViaTitledb('HK', hkLocalTitle || gameName, emit);
-      tdIds.forEach(addNew);
-    }
   }
 
-  // JP: search JP catalog + store-jp with Japanese title from Phase 1.
-  // Falls back to store-jp search with English title when catalog is unreachable.
-  // If both come up empty, titledb is the last resort.
+  // JP: titledb first, then live catalog/store-jp as fallback.
   async function findJP() {
     const searchQuery = jpLocalTitle || gameName;
     const label = jpLocalTitle ? `JA: "${jpLocalTitle.slice(0, 20)}"` : `EN: "${gameName.slice(0, 20)}"`;
     const q = encodeURIComponent(searchQuery);
-    let found = false;
 
-    // store-jp: NSUIDs in D{nsuid} links — accessible from Render
+    // titledb first — fast local lookup, no network dependency
+    const tdIds = await findNsuidsViaTitledb('JP', searchQuery, emit);
+    tdIds.forEach(addNew);
+    if (tdIds.length) return;
+
+    // Fallback: store-jp search (accessible from Render)
     try {
       const res = await axios.get(`https://store-jp.nintendo.com/search/?q=${q}&genre=Game`, {
         timeout: 10000,
@@ -708,7 +708,6 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
       const ids = [...new Set((String(res.data).match(/D(700[0-9]\d{10})/g) || []).map(m => m.slice(1)))];
       emit(`JP store search (${label}): ${ids.length} nsuid(s)${ids.length ? ` [${ids.join(',')}]` : ''}`);
       ids.forEach(addNew);
-      found = found || ids.length > 0;
     } catch (e) { emit(`JP store search: ${e.message.slice(0, 60)}`); }
 
     // JP catalog — only try if endpoint is reachable (may be blocked on Render)
@@ -718,12 +717,6 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
         `JP catalog (${label})`
       );
       ids.forEach(addNew);
-      found = found || ids.length > 0;
-    }
-
-    if (!found) {
-      const tdIds = await findNsuidsViaTitledb('JP', searchQuery, emit);
-      tdIds.forEach(addNew);
     }
   }
 

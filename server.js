@@ -1336,13 +1336,21 @@ function startTelegramBot() {
 
     } else if (/^\/start|\/help/.test(text)) {
       await bot.sendMessage(chatId,
-        '👋 Send me a game link and I\'ll show you the best prices in SGD\\.\n\n' +
+        '👋 Send me a game name or link and I\'ll show you prices across regions in SGD\\.\n\n' +
+        '*Game search:*\n• Just type the game name, e\\.g\\. `Pokemon Violet`\n\n' +
         '*Supported URLs:*\n• eshop\\-prices\\.com/games/\\.\\.\\.\n• dekudeals\\.com/items/\\.\\.\\.\n• nintendo\\.com/\\*/store/products/\\.\\.\\.\n\n' +
         '*Gift card commands:*\n• `/giftcards` — view all current CNY prices\n• `/updategiftcard USD 10 60` — update an existing denomination\n• `/addgiftcard USD 25 150` — add a new denomination\n\n' +
         '*Price solver:*\n• `/solver USD 5\\.05` — find up to 5 combos of games that add up exactly to that amount \\(USD, CAD, MXN, BRL\\)\n\n' +
-        '*Example:*\n`https://eshop\\-prices\\.com/games/17496\\-cyberpunk\\-2077\\-ultimate\\-edition`',
+        '*Example:*\n`Pokemon Violet`\n`https://eshop\\-prices\\.com/games/17496\\-cyberpunk\\-2077\\-ultimate\\-edition`',
         { parse_mode: 'MarkdownV2' }
       );
+
+    } else if (text && !text.startsWith('/')) {
+      // Plain text: treat as game title search
+      const slug = toNintendoSlug(text);
+      if (slug) {
+        await handleUrl(chatId, `https://www.nintendo.com/us/store/products/${slug}/`, msg.message_id);
+      }
     }
   });
 

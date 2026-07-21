@@ -618,13 +618,22 @@ async function findNsuidsViaTitledb(region, searchName, emit) {
   const words = searchName.toLowerCase().split(/\W+/).filter(w => w && !LC_WORDS.has(w));
   if (!words.length) return [];
   const candidates = entries.filter(e => {
+    // Match against localized name OR English name (cross-referenced from US catalog)
     const n = e.name.toLowerCase();
-    return words.every(w => n.includes(w));
+    const nEn = e.nameEn ? e.nameEn.toLowerCase() : null;
+    return words.every(w => n.includes(w) || (nEn && nEn.includes(w)));
   });
   if (!candidates.length) { emit(`titledb (${region}): no match for "${searchName}"`); return []; }
-  candidates.sort((a, b) => a.name.length - b.name.length);
+  // Prefer entries where English name matches (more precise), then shortest name
+  candidates.sort((a, b) => {
+    const aEnMatch = a.nameEn ? words.every(w => a.nameEn.toLowerCase().includes(w)) : false;
+    const bEnMatch = b.nameEn ? words.every(w => b.nameEn.toLowerCase().includes(w)) : false;
+    if (aEnMatch !== bEnMatch) return aEnMatch ? -1 : 1;
+    return (a.nameEn || a.name).length - (b.nameEn || b.name).length;
+  });
   const best = candidates[0];
-  emit(`titledb (${region}): matched "${best.name}" → ${best.nsuid} (${candidates.length} candidate(s))`);
+  const matchedName = best.nameEn || best.name;
+  emit(`titledb (${region}): matched "${matchedName}" → ${best.nsuid} (${candidates.length} candidate(s))`);
   return [best.nsuid];
 }
 

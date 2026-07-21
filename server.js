@@ -565,7 +565,7 @@ async function findNsuidsPhase1(gameUrl, emit) {
     }).catch(e => emit(`eshop-prices HTML: ${e.message.slice(0, 60)}`)) : Promise.resolve(),
   ]);
 
-  if (!gameName) gameName = slug;
+  if (!gameName) gameName = searchSlug;
   gameName = toTitleCase(gameName);
 
   // Prefer a non-EU 7001 nsuid as usNsuid (Americas eShop, correct anchor for JP probing).

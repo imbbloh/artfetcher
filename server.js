@@ -856,13 +856,14 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
   const usAnchor = usNsuid ? [usNsuid] : [];
   const euOrUs = euPrimary.length ? euPrimary : usAnchor;
 
-  // HK runs first so its NSUIDs can be used as a JP probe base
-  await Promise.all([findHK(), findUS(euPrimary)]);
-  // JP runs after HK — can probe off HK NSUIDs if other methods fail
-  const hkFound = newNsuids.filter(id => hkNsuids.includes(id) || seen.has(id));
-  // Collect all HK NSUIDs found so far (from Phase 1 + Phase 2 findHK)
-  const allHkNsuids = [...new Set([...hkNsuids, ...newNsuids.filter(id => /^700[0-9]\d{10}$/.test(id))])];
-  await Promise.all([findJP(allHkNsuids), findSG(allHkNsuids.length ? allHkNsuids : (hkNsuids.length ? hkNsuids : euOrUs))]);
+  // All run in parallel; findJP receives Phase 1 HK NSUIDs as probe base
+  const hkBase = hkNsuids.length ? hkNsuids : euOrUs;
+  await Promise.all([
+    findHK(),
+    findJP(hkNsuids),
+    findSG(hkBase),
+    findUS(euPrimary),
+  ]);
 
   emit(`Phase 2 done: ${newNsuids.length} additional nsuid(s)`);
   return newNsuids;

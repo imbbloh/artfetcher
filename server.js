@@ -674,6 +674,8 @@ function findNsuidsViaTitledb(region, searchName, emit) {
 
 async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, hkNsuids, usNsuid, hkLocalTitle, jpLocalTitle }, emit) {
   const newNsuids = [];
+  let jpFoundCount = 0;
+  let hkFoundInP2 = [];
   const addNew = (id) => { const s = String(id || ''); if (/^700[0-9]\d{10}$/.test(s) && !seen.has(s)) { seen.add(s); newNsuids.push(s); } };
 
   // Search a Nintendo catalog endpoint with a query, return { ids, localTitles }
@@ -694,44 +696,53 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
   }
 
   async function findHK() {
+    const beforeCount = newNsuids.length;
+
     // 1. xref: US NSUID -> title ID -> HK NSUID (most reliable)
     const xrefId = findNsuidViaXref(usNsuid, 'HK', emit);
-    if (xrefId) { addNew(xrefId); return; }
+    if (xrefId) { addNew(xrefId); }
 
-    // 2. titledb word match (works for games in titledb but not in US catalog)
-    const tdIds = findNsuidsViaTitledb('HK', hkLocalTitle || gameName, emit);
-    tdIds.forEach(addNew);
-    if (tdIds.length) return;
+    // 2. titledb word match
+    if (newNsuids.length === beforeCount) {
+      const tdIds = findNsuidsViaTitledb('HK', hkLocalTitle || gameName, emit);
+      tdIds.forEach(addNew);
+    }
 
     // 3. Live catalog search or gap probe off EU/US anchor
-    if (hkLocalTitle) {
-      const zhQ = encodeURIComponent(hkLocalTitle);
-      const { ids } = await searchCatalog(
-        `https://searching.nintendo-asia.com/zh_HK/select?q=${zhQ}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
-        `HK search (ZH: "${hkLocalTitle.slice(0, 20)}")`
-      );
-      ids.forEach(addNew);
-    } else {
-      const hkBase = hkNsuids.length ? hkNsuids : euOrUs;
-      if (hkBase.length) {
-        const HK_GAP = 50n;
-        const probeIds = [...new Set(hkBase.flatMap(b => {
-          const bn = BigInt(b);
-          return Array.from({ length: Number(HK_GAP) }, (_, i) => [String(bn + BigInt(i + 1)), String(bn - BigInt(i + 1))]).flat();
-        }).filter(p => /^700[0-9]\d{10}$/.test(p) && !seen.has(p)))].slice(0, 50);
-        if (probeIds.length) {
-          try {
-            const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=HK&lang=zh&ids=${probeIds.join(',')}`, { timeout: 20000 });
-            const hits = (res.data?.prices || []).filter(p => p.sales_status !== 'not_found' && (p.regular_price || p.discount_price));
-            hits.forEach(p => addNew(String(p.title_id)));
-            emit(`HK probe: ${hits.length} found`);
-          } catch (e) { emit(`HK probe: ${e.message.slice(0, 50)}`); }
+    if (newNsuids.length === beforeCount) {
+      if (hkLocalTitle) {
+        const zhQ = encodeURIComponent(hkLocalTitle);
+        const { ids } = await searchCatalog(
+          `https://searching.nintendo-asia.com/zh_HK/select?q=${zhQ}&fq=type%3AGAME&rows=10&wt=json&fl=title,nsuid_txt`,
+          `HK search (ZH: "${hkLocalTitle.slice(0, 20)}")`
+        );
+        ids.forEach(addNew);
+      } else {
+        const hkBase = hkNsuids.length ? hkNsuids : euOrUs;
+        if (hkBase.length) {
+          const HK_GAP = 50n;
+          const probeIds = [...new Set(hkBase.flatMap(b => {
+            const bn = BigInt(b);
+            return Array.from({ length: Number(HK_GAP) }, (_, i) => [String(bn + BigInt(i + 1)), String(bn - BigInt(i + 1))]).flat();
+          }).filter(p => /^700[0-9]\d{10}$/.test(p) && !seen.has(p)))].slice(0, 50);
+          if (probeIds.length) {
+            try {
+              const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=HK&lang=zh&ids=${probeIds.join(',')}`, { timeout: 20000 });
+              const hits = (res.data?.prices || []).filter(p => p.sales_status !== 'not_found' && (p.regular_price || p.discount_price));
+              hits.forEach(p => addNew(String(p.title_id)));
+              emit(`HK probe: ${hits.length} found`);
+            } catch (e) { emit(`HK probe: ${e.message.slice(0, 50)}`); }
+          } else emit('HK probe: no base');
         } else emit('HK probe: no base');
-      } else emit('HK probe: no base');
+      }
     }
+
+    // Track what HK found for JP post-pass
+    hkFoundInP2 = newNsuids.slice(beforeCount);
   }
 
   async function findJP(hkBase = []) {
+    const beforeCount = newNsuids.length;
     const searchQuery = jpLocalTitle || gameName;
     const label = jpLocalTitle ? `JA: "${jpLocalTitle.slice(0, 20)}"` : `EN: "${gameName.slice(0, 20)}"`;
     const q = encodeURIComponent(searchQuery);
@@ -802,6 +813,7 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
         } catch (e) { emit(`JP probe (HK): ${e.message.slice(0, 50)}`); }
       } else emit('JP probe (HK): no base');
     }
+    jpFoundCount = newNsuids.length - beforeCount;
   }
 
   // SG: gap probe off HK nsuids, chunked to avoid 400 errors
@@ -856,7 +868,6 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
   const usAnchor = usNsuid ? [usNsuid] : [];
   const euOrUs = euPrimary.length ? euPrimary : usAnchor;
 
-  // All run in parallel; findJP receives Phase 1 HK NSUIDs as probe base
   const hkBase = hkNsuids.length ? hkNsuids : euOrUs;
   await Promise.all([
     findHK(),
@@ -864,6 +875,12 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
     findSG(hkBase),
     findUS(euPrimary),
   ]);
+
+  // Post-pass: if JP not found but HK was found in Phase 2, probe JP off those HK NSUIDs
+  if (jpFoundCount === 0 && hkFoundInP2.length) {
+    emit(`JP post-pass: probing ±10 off ${hkFoundInP2.length} HK nsuid(s) found in Phase 2`);
+    await findJP(hkFoundInP2);
+  }
 
   emit(`Phase 2 done: ${newNsuids.length} additional nsuid(s)`);
   return newNsuids;

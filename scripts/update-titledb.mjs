@@ -1,10 +1,7 @@
 #!/usr/bin/env node
 // Builds artefacts from blawar/titledb:
-//   data/titledb-jp.json  — [{nsuid, name, nameEn?}] for word-match fallback
-//   data/titledb-hk.json  — [{nsuid, name, nameEn?}] for word-match fallback
-//   data/titledb-au.json  — [{nsuid, name}] for word-match fallback
-//   data/titledb-sg.json  — [{nsuid, name}] for word-match fallback
-//   data/titledb-xref.json — {titleId: {jp?, hk?, us?, au?, sg?}} for direct cross-region lookup
+//   data/titledb-{us,jp,hk,au,sg,ca,br,mx}.json — [{nsuid, name, nameEn?}] for word-match fallback
+//   data/titledb-xref.json — {titleId: {us?,jp?,hk?,au?,sg?,ca?,br?,mx?}} for cross-region lookup
 // Run daily by .github/workflows/update-titledb.yml.
 import { mkdir, writeFile } from 'node:fs/promises';
 
@@ -20,12 +17,15 @@ async function fetchRaw(file) {
 async function main() {
   await mkdir('data', { recursive: true });
 
-  const [usRaw, jpRaw, hkRaw, auRaw, sgRaw] = await Promise.all([
+  const [usRaw, jpRaw, hkRaw, auRaw, sgRaw, caRaw, brRaw, mxRaw] = await Promise.all([
     fetchRaw('US.en.json'),
     fetchRaw('JP.ja.json'),
     fetchRaw('HK.zh.json'),
     fetchRaw('AU.en.json'),
     fetchRaw('SG.en.json'),
+    fetchRaw('CA.en.json'),
+    fetchRaw('BR.pt.json'),
+    fetchRaw('MX.es.json'),
   ]);
 
   // titleId -> English name (from US)
@@ -42,7 +42,7 @@ async function main() {
   }
   console.log(`US index: ${enByTitleId.size} titles`);
 
-  // xref: titleId -> { jp?, hk?, us?, au?, sg? }
+  // xref: titleId -> { us?, jp?, hk?, au?, sg?, ca?, br?, mx? }
   const xref = {};
 
   function buildEntries(raw, region) {
@@ -64,31 +64,49 @@ async function main() {
     return entries;
   }
 
+  // US entries: build word-match list and seed xref us field
+  const usEntries = [];
+  for (const nsuid in usRaw) {
+    const e = usRaw[nsuid];
+    if (!e?.name) continue;
+    usEntries.push({ nsuid, name: e.name });
+    if (e.id) {
+      if (!xref[e.id]) xref[e.id] = {};
+      xref[e.id].us = nsuid;
+    }
+  }
+
   const jpEntries = buildEntries(jpRaw, 'jp');
   const hkEntries = buildEntries(hkRaw, 'hk');
   const auEntries = buildEntries(auRaw, 'au');
   const sgEntries = buildEntries(sgRaw, 'sg');
+  const caEntries = buildEntries(caRaw, 'ca');
+  const brEntries = buildEntries(brRaw, 'br');
+  const mxEntries = buildEntries(mxRaw, 'mx');
 
-  // Also add US entries to xref for US nsuid -> titleId reverse lookup
-  for (const nsuid in usRaw) {
-    const e = usRaw[nsuid];
-    if (!e?.id) continue;
-    if (!xref[e.id]) xref[e.id] = {};
-    xref[e.id].us = nsuid;
-  }
+  const files = {
+    'titledb-us.json': usEntries,
+    'titledb-jp.json': jpEntries,
+    'titledb-hk.json': hkEntries,
+    'titledb-au.json': auEntries,
+    'titledb-sg.json': sgEntries,
+    'titledb-ca.json': caEntries,
+    'titledb-br.json': brEntries,
+    'titledb-mx.json': mxEntries,
+  };
 
-  await writeFile('data/titledb-jp.json', JSON.stringify(jpEntries));
-  await writeFile('data/titledb-hk.json', JSON.stringify(hkEntries));
-  await writeFile('data/titledb-au.json', JSON.stringify(auEntries));
-  await writeFile('data/titledb-sg.json', JSON.stringify(sgEntries));
-  await writeFile('data/titledb-xref.json', JSON.stringify(xref));
+  await Promise.all([
+    ...Object.entries(files).map(([f, data]) => writeFile(`data/${f}`, JSON.stringify(data))),
+    writeFile('data/titledb-xref.json', JSON.stringify(xref)),
+  ]);
 
   const count = (field) => Object.values(xref).filter(v => v[field]).length;
-  console.log(`✓ data/titledb-jp.json — ${jpEntries.length} titles (${jpEntries.filter(e => e.nameEn).length} with English name)`);
-  console.log(`✓ data/titledb-hk.json — ${hkEntries.length} titles (${hkEntries.filter(e => e.nameEn).length} with English name)`);
-  console.log(`✓ data/titledb-au.json — ${auEntries.length} titles (${auEntries.filter(e => e.nameEn).length} with English name)`);
-  console.log(`✓ data/titledb-sg.json — ${sgEntries.length} titles (${sgEntries.filter(e => e.nameEn).length} with English name)`);
-  console.log(`✓ data/titledb-xref.json — ${Object.keys(xref).length} title IDs (jp:${count('jp')} hk:${count('hk')} au:${count('au')} sg:${count('sg')})`);
+  for (const [f, data] of Object.entries(files)) {
+    const withEn = data.filter(e => e.nameEn).length;
+    console.log(`✓ data/${f} — ${data.length} titles${withEn ? ` (${withEn} with English name)` : ''}`);
+  }
+  const fields = ['us', 'jp', 'hk', 'au', 'sg', 'ca', 'br', 'mx'];
+  console.log(`✓ data/titledb-xref.json — ${Object.keys(xref).length} title IDs (${fields.map(f => `${f}:${count(f)}`).join(' ')})`);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

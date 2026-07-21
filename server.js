@@ -599,7 +599,11 @@ async function findNsuidsPhase1(gameUrl, emit) {
 // uses for its own scraped datasets. The bot only ever reads the small committed
 // file from local disk: no network fetch, no multi-second latency, and no risk
 // of holding an 80MB+ parsed object in memory during a live Telegram request.
-const TITLEDB_REGIONS = { JP: 'titledb-jp.json', HK: 'titledb-hk.json', AU: 'titledb-au.json', SG: 'titledb-sg.json' };
+const TITLEDB_REGIONS = {
+  US: 'titledb-us.json', JP: 'titledb-jp.json', HK: 'titledb-hk.json',
+  AU: 'titledb-au.json', SG: 'titledb-sg.json',
+  CA: 'titledb-ca.json', BR: 'titledb-br.json', MX: 'titledb-mx.json',
+};
 const titledbCache = new Map(); // region -> [{nsuid, name, nameEn?}]
 let titledbXref = null;       // titleId -> { jp?, hk?, us? }
 // usNsuid -> titleId reverse map, built lazily from xref
@@ -906,9 +910,18 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
     emit(`SG probe: ${found} found`);
   }
 
-  // US fallback probe off EU nsuids when Algolia/nintendo.com missed US nsuid
+  // US/Americas fallback when Algolia/nintendo.com missed the US nsuid
   async function findUS(euPrimary) {
-    if (usNsuid || !euPrimary.length) return;
+    if (usNsuid) return;
+
+    // 1. titledb word match (US, CA, BR, MX share the same Americas NSUIDs)
+    for (const region of ['US', 'CA', 'BR', 'MX']) {
+      const tdIds = findNsuidsViaTitledb(region, gameName, emit);
+      if (tdIds.length) { tdIds.forEach(addNew); return; }
+    }
+
+    // 2. Gap probe off EU nsuids
+    if (!euPrimary.length) return;
     const US_GAP = 20n;
     const probeIds = [];
     for (const b of euPrimary) {

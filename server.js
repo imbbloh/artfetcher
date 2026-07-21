@@ -154,8 +154,13 @@ function minGiftCardAmount(price, denoms) {
   return null;
 }
 
+// Strip diacritics: é→e, ō→o, etc. Decomposes to NFD then drops combining accent marks.
+function normStr(s) {
+  return String(s || '').normalize('NFD').replace(/\p{Mn}/gu, '').toLowerCase();
+}
+
 function toNintendoSlug(name) {
-  return String(name).toLowerCase().replace(/[™®©]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+  return normStr(name).replace(/[™®©]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
 }
 
 // Normalize game title to consistent title case.
@@ -376,7 +381,7 @@ async function findNsuidsPhase1(gameUrl, emit) {
   // Strip leading numeric ID from eshop-prices slugs (e.g. "5425 monster hunter rise" → "monster hunter rise")
   const searchSlug = slug.replace(/^\d+ /, '');
   const q = encodeURIComponent(searchSlug);
-  const words = searchSlug.toLowerCase().split(' ').filter(w => w.length > 2);
+  const words = normStr(searchSlug).split(' ').filter(w => w.length > 2);
 
   const seen = new Set();
   const nsuids = [];
@@ -413,8 +418,8 @@ async function findNsuidsPhase1(gameUrl, emit) {
         // matching a search for "Resident Evil Requiem" and anchoring probes to the wrong game.
         const distinctWords = words.filter(w => w.length >= 5);
         const scored = docs
-          .filter(d => distinctWords.every(w => (d.title || '').toLowerCase().includes(w)))
-          .map(d => ({ d, score: words.filter(w => (d.title || '').toLowerCase().includes(w)).length }))
+          .filter(d => distinctWords.every(w => normStr(d.title).includes(w)))
+          .map(d => ({ d, score: words.filter(w => normStr(d.title).includes(w)).length }))
           .sort((a, b) => b.score - a.score);
         if (scored[0]?.d.title) gameName = scored[0].d.title;
         const before = nsuids.length;
@@ -496,7 +501,7 @@ async function findNsuidsPhase1(gameUrl, emit) {
     nameSlug + '-switch', searchSlugHyphen + '-switch', nameSlug, searchSlugHyphen,
     ...(originalSlug ? [originalSlug] : []),
   ])];
-  const titleWords = (gameName || searchSlug).toLowerCase().split(/\W+/).filter(w => w.length > 2);
+  const titleWords = normStr(gameName || searchSlug).split(/\W+/).filter(w => w.length > 2);
 
   await Promise.allSettled([
     // If input was a nintendo.com URL, fetch it directly first (contains nsuid in HTML)
@@ -524,7 +529,7 @@ async function findNsuidsPhase1(gameUrl, emit) {
           let best = null, bestScore = -1;
           for (const h of hits) {
             if (!h.nsuid || !/^700[0-9]\d{10}$/.test(String(h.nsuid))) continue;
-            const score = titleWords.filter(w => (h.title || '').toLowerCase().includes(w)).length;
+            const score = titleWords.filter(w => normStr(h.title).includes(w)).length;
             if (score > bestScore) { bestScore = score; best = h; }
           }
           if (best && !usNsuid) usNsuid = String(best.nsuid);
@@ -660,19 +665,19 @@ function findNsuidViaXref(usNsuid, region, emit) {
 function findNsuidsViaTitledb(region, searchName, emit) {
   const entries = loadTitledb(region, emit);
   if (!entries.length || !searchName) return [];
-  const words = searchName.toLowerCase().split(/\W+/).filter(w => w && !LC_WORDS.has(w));
+  const words = normStr(searchName).split(/\W+/).filter(w => w && !LC_WORDS.has(w));
   if (!words.length) return [];
   const candidates = entries.filter(e => {
     // Match against localized name OR English name (cross-referenced from US catalog)
-    const n = e.name.toLowerCase();
-    const nEn = e.nameEn ? e.nameEn.toLowerCase() : null;
+    const n = normStr(e.name);
+    const nEn = e.nameEn ? normStr(e.nameEn) : null;
     return words.every(w => n.includes(w) || (nEn && nEn.includes(w)));
   });
   if (!candidates.length) { emit(`titledb (${region}): no match for "${searchName}"`); return []; }
   // Prefer entries where English name matches (more precise), then shortest name
   candidates.sort((a, b) => {
-    const aEnMatch = a.nameEn ? words.every(w => a.nameEn.toLowerCase().includes(w)) : false;
-    const bEnMatch = b.nameEn ? words.every(w => b.nameEn.toLowerCase().includes(w)) : false;
+    const aEnMatch = a.nameEn ? words.every(w => normStr(a.nameEn).includes(w)) : false;
+    const bEnMatch = b.nameEn ? words.every(w => normStr(b.nameEn).includes(w)) : false;
     if (aEnMatch !== bEnMatch) return aEnMatch ? -1 : 1;
     return (a.nameEn || a.name).length - (b.nameEn || b.name).length;
   });

@@ -545,10 +545,19 @@ async function findNsuidsPhase1(gameUrl, emit) {
       timeout: 10000,
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', 'Accept': 'text/html,application/xhtml+xml' },
     }).then(r => {
-      const ids = [...new Set((String(r.data).match(/700[0-9]\d{10}/g) || []))];
+      const html = String(r.data);
+      const ids = [...new Set((html.match(/700[0-9]\d{10}/g) || []))];
       const before = nsuids.length;
       addMany(ids);
-      if (nsuids.length > before) emit(`eshop-prices HTML: +${nsuids.length - before} nsuid(s) [${ids.join(',')}]`);
+      // Parse ec.nintendo.com region links to tag NSUIDs by region directly in Phase 1
+      const regionLinkRe = /ec\.nintendo\.com\/([A-Z]{2})\/[^/]+\/titles\/(\d{14})/g;
+      let m;
+      while ((m = regionLinkRe.exec(html)) !== null) {
+        const [, cc, nsuid] = m;
+        if (cc === 'JP' && !jpNsuids.includes(nsuid)) { jpNsuids.push(nsuid); add(nsuid); }
+        else if (cc === 'HK' && !hkNsuids.includes(nsuid)) { hkNsuids.push(nsuid); add(nsuid); }
+      }
+      if (nsuids.length > before) emit(`eshop-prices HTML: +${nsuids.length - before} nsuid(s) jp=${jpNsuids.length} hk=${hkNsuids.length}`);
       else emit(`eshop-prices HTML: fetched but no new nsuids`);
     }).catch(e => emit(`eshop-prices HTML: ${e.message.slice(0, 60)}`)) : Promise.resolve(),
   ]);
@@ -698,6 +707,14 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
   async function findHK() {
     const beforeCount = newNsuids.length;
 
+    // 0. eshop-prices HTML already tagged HK nsuid(s) in Phase 1 — most reliable
+    if (hkNsuids.length) {
+      emit(`HK: using ${hkNsuids.length} nsuid(s) from eshop-prices HTML [${hkNsuids.join(',')}]`);
+      hkNsuids.forEach(addNew);
+      hkFoundInP2.push(...hkNsuids);
+      return;
+    }
+
     // 1. xref: US NSUID -> title ID -> HK NSUID (most reliable)
     const xrefId = findNsuidViaXref(usNsuid, 'HK', emit);
     if (xrefId) { addNew(xrefId); }
@@ -746,6 +763,13 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
     const searchQuery = jpLocalTitle || gameName;
     const label = jpLocalTitle ? `JA: "${jpLocalTitle.slice(0, 20)}"` : `EN: "${gameName.slice(0, 20)}"`;
     const q = encodeURIComponent(searchQuery);
+
+    // 0. eshop-prices HTML already tagged JP nsuid(s) in Phase 1 — most reliable
+    if (jpNsuids.length) {
+      emit(`JP: using ${jpNsuids.length} nsuid(s) from eshop-prices HTML [${jpNsuids.join(',')}]`);
+      jpNsuids.forEach(addNew);
+      return;
+    }
 
     // 1. xref: US NSUID -> title ID -> JP NSUID (most reliable)
     const xrefId = findNsuidViaXref(usNsuid, 'JP', emit);

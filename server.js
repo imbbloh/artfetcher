@@ -1123,6 +1123,12 @@ function startTelegramBot() {
       const finalText = formatTelegramMessage(data);
       await bot.sendMessage(chatId, finalText, { parse_mode: 'MarkdownV2', disable_web_page_preview: true });
       await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+      // If all regions are "Not Available", send debug log so we can diagnose
+      const allUnavailable = data.results && data.results.every(r => !r.rawPrice);
+      if (allUnavailable) {
+        const logText = logs.join('\n');
+        await bot.sendMessage(chatId, `🔧 Debug (all unavailable):\n${logText}`);
+      }
     } catch (err) {
       const logText = logs.length ? `\n\nDebug:\n${logs.slice(-8).join('\n')}` : '';
       await bot.sendMessage(chatId, `❌ Error: ${err.message}${logText}`);

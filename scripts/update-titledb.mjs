@@ -1,8 +1,10 @@
 #!/usr/bin/env node
-// Builds two artefacts from blawar/titledb:
+// Builds artefacts from blawar/titledb:
 //   data/titledb-jp.json  — [{nsuid, name, nameEn?}] for word-match fallback
 //   data/titledb-hk.json  — [{nsuid, name, nameEn?}] for word-match fallback
-//   data/titledb-xref.json — {titleId: {jp?, hk?, us?}} for direct cross-region lookup
+//   data/titledb-au.json  — [{nsuid, name}] for word-match fallback
+//   data/titledb-sg.json  — [{nsuid, name}] for word-match fallback
+//   data/titledb-xref.json — {titleId: {jp?, hk?, us?, au?, sg?}} for direct cross-region lookup
 // Run daily by .github/workflows/update-titledb.yml.
 import { mkdir, writeFile } from 'node:fs/promises';
 
@@ -18,10 +20,12 @@ async function fetchRaw(file) {
 async function main() {
   await mkdir('data', { recursive: true });
 
-  const [usRaw, jpRaw, hkRaw] = await Promise.all([
+  const [usRaw, jpRaw, hkRaw, auRaw, sgRaw] = await Promise.all([
     fetchRaw('US.en.json'),
     fetchRaw('JP.ja.json'),
     fetchRaw('HK.zh.json'),
+    fetchRaw('AU.en.json'),
+    fetchRaw('SG.en.json'),
   ]);
 
   // titleId -> English name (from US)
@@ -38,42 +42,32 @@ async function main() {
   }
   console.log(`US index: ${enByTitleId.size} titles`);
 
-  // xref: titleId -> { jp?, hk?, us? }
+  // xref: titleId -> { jp?, hk?, us?, au?, sg? }
   const xref = {};
 
-  // JP entries
-  const jpEntries = [];
-  for (const nsuid in jpRaw) {
-    const e = jpRaw[nsuid];
-    if (!e?.name) continue;
-    const entry = { nsuid, name: e.name };
-    const nameEn = e.id ? enByTitleId.get(e.id) : null;
-    if (nameEn && nameEn !== e.name) entry.nameEn = nameEn;
-    jpEntries.push(entry);
-    if (e.id) {
-      if (!xref[e.id]) xref[e.id] = {};
-      xref[e.id].jp = nsuid;
-      const usNsuid = usNsuidByTitleId.get(e.id);
-      if (usNsuid) xref[e.id].us = usNsuid;
+  function buildEntries(raw, region) {
+    const entries = [];
+    for (const nsuid in raw) {
+      const e = raw[nsuid];
+      if (!e?.name) continue;
+      const entry = { nsuid, name: e.name };
+      const nameEn = e.id ? enByTitleId.get(e.id) : null;
+      if (nameEn && nameEn !== e.name) entry.nameEn = nameEn;
+      entries.push(entry);
+      if (e.id) {
+        if (!xref[e.id]) xref[e.id] = {};
+        xref[e.id][region] = nsuid;
+        const usNsuid = usNsuidByTitleId.get(e.id);
+        if (usNsuid) xref[e.id].us = usNsuid;
+      }
     }
+    return entries;
   }
 
-  // HK entries
-  const hkEntries = [];
-  for (const nsuid in hkRaw) {
-    const e = hkRaw[nsuid];
-    if (!e?.name) continue;
-    const entry = { nsuid, name: e.name };
-    const nameEn = e.id ? enByTitleId.get(e.id) : null;
-    if (nameEn && nameEn !== e.name) entry.nameEn = nameEn;
-    hkEntries.push(entry);
-    if (e.id) {
-      if (!xref[e.id]) xref[e.id] = {};
-      xref[e.id].hk = nsuid;
-      const usNsuid = usNsuidByTitleId.get(e.id);
-      if (usNsuid) xref[e.id].us = usNsuid;
-    }
-  }
+  const jpEntries = buildEntries(jpRaw, 'jp');
+  const hkEntries = buildEntries(hkRaw, 'hk');
+  const auEntries = buildEntries(auRaw, 'au');
+  const sgEntries = buildEntries(sgRaw, 'sg');
 
   // Also add US entries to xref for US nsuid -> titleId reverse lookup
   for (const nsuid in usRaw) {
@@ -85,15 +79,16 @@ async function main() {
 
   await writeFile('data/titledb-jp.json', JSON.stringify(jpEntries));
   await writeFile('data/titledb-hk.json', JSON.stringify(hkEntries));
+  await writeFile('data/titledb-au.json', JSON.stringify(auEntries));
+  await writeFile('data/titledb-sg.json', JSON.stringify(sgEntries));
   await writeFile('data/titledb-xref.json', JSON.stringify(xref));
 
-  const xrefWithJp = Object.values(xref).filter(v => v.jp).length;
-  const xrefWithHk = Object.values(xref).filter(v => v.hk).length;
-  const xrefWithBoth = Object.values(xref).filter(v => v.jp && v.hk).length;
-
+  const count = (field) => Object.values(xref).filter(v => v[field]).length;
   console.log(`✓ data/titledb-jp.json — ${jpEntries.length} titles (${jpEntries.filter(e => e.nameEn).length} with English name)`);
   console.log(`✓ data/titledb-hk.json — ${hkEntries.length} titles (${hkEntries.filter(e => e.nameEn).length} with English name)`);
-  console.log(`✓ data/titledb-xref.json — ${Object.keys(xref).length} title IDs (${xrefWithJp} with JP, ${xrefWithHk} with HK, ${xrefWithBoth} with both)`);
+  console.log(`✓ data/titledb-au.json — ${auEntries.length} titles (${auEntries.filter(e => e.nameEn).length} with English name)`);
+  console.log(`✓ data/titledb-sg.json — ${sgEntries.length} titles (${sgEntries.filter(e => e.nameEn).length} with English name)`);
+  console.log(`✓ data/titledb-xref.json — ${Object.keys(xref).length} title IDs (jp:${count('jp')} hk:${count('hk')} au:${count('au')} sg:${count('sg')})`);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

@@ -599,7 +599,7 @@ async function findNsuidsPhase1(gameUrl, emit) {
 // uses for its own scraped datasets. The bot only ever reads the small committed
 // file from local disk: no network fetch, no multi-second latency, and no risk
 // of holding an 80MB+ parsed object in memory during a live Telegram request.
-const TITLEDB_REGIONS = { JP: 'titledb-jp.json', HK: 'titledb-hk.json' };
+const TITLEDB_REGIONS = { JP: 'titledb-jp.json', HK: 'titledb-hk.json', AU: 'titledb-au.json', SG: 'titledb-sg.json' };
 const titledbCache = new Map(); // region -> [{nsuid, name, nameEn?}]
 let titledbXref = null;       // titleId -> { jp?, hk?, us? }
 // usNsuid -> titleId reverse map, built lazily from xref
@@ -647,7 +647,8 @@ function findNsuidViaXref(usNsuid, region, emit) {
   const titleId = usNsuidToTitleId[usNsuid];
   if (!titleId) { emit(`xref: US nsuid ${usNsuid} not in xref`); return null; }
   const entry = titledbXref[titleId];
-  const nsuid = region === 'JP' ? entry?.jp : entry?.hk;
+  const key = region.toLowerCase();
+  const nsuid = entry?.[key];
   if (nsuid) emit(`xref: ${region} nsuid ${nsuid} (titleId ${titleId})`);
   else emit(`xref: no ${region} entry for titleId ${titleId}`);
   return nsuid || null;
@@ -848,15 +849,50 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
     jpFoundCount = newNsuids.length - beforeCount;
   }
 
-  // SG: gap probe off HK nsuids, chunked to avoid 400 errors
+  // AU: xref → word-match → gap probe off EU nsuids
+  async function findAU() {
+    // 1. xref: US NSUID -> title ID -> AU NSUID
+    const xrefId = findNsuidViaXref(usNsuid, 'AU', emit);
+    if (xrefId) { addNew(xrefId); return; }
+
+    // 2. titledb word match
+    const tdIds = findNsuidsViaTitledb('AU', gameName, emit);
+    if (tdIds.length) { tdIds.forEach(addNew); return; }
+
+    // 3. Gap probe off EU nsuids (AU is PAL region, NSUIDs are typically close)
+    if (!euOrUs.length) { emit('AU probe: no base'); return; }
+    const AU_GAP = 20n;
+    const probeIds = [...new Set(euOrUs.flatMap(b => {
+      const bn = BigInt(b);
+      return Array.from({ length: Number(AU_GAP) }, (_, i) => [String(bn + BigInt(i + 1)), String(bn - BigInt(i + 1))]).flat();
+    }).filter(p => /^700[0-9]\d{10}$/.test(p) && !seen.has(p)))].slice(0, 50);
+    if (!probeIds.length) { emit('AU probe: no candidates'); return; }
+    try {
+      const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=AU&lang=en&ids=${probeIds.join(',')}`, { timeout: 20000 });
+      const hits = (res.data?.prices || []).filter(p => p.sales_status !== 'not_found' && (p.regular_price || p.discount_price));
+      hits.forEach(p => addNew(String(p.title_id)));
+      emit(`AU probe: ${hits.length} found`);
+    } catch (e) { emit(`AU probe: ${e.message.slice(0, 50)}`); }
+  }
+
+  // SG: xref → word-match → gap probe off HK nsuids
   async function findSG(hkBase) {
+    // 1. xref: US NSUID -> title ID -> SG NSUID
+    const xrefId = findNsuidViaXref(usNsuid, 'SG', emit);
+    if (xrefId) { addNew(xrefId); return; }
+
+    // 2. titledb word match
+    const tdIds = findNsuidsViaTitledb('SG', gameName, emit);
+    if (tdIds.length) { tdIds.forEach(addNew); return; }
+
+    // 3. Gap probe off HK nsuids
     if (!hkBase.length) { emit('SG probe: no base'); return; }
     const SG_GAP = 50n;
     const probeIds = [...new Set(hkBase.flatMap(b => {
       const bn = BigInt(b);
       return Array.from({ length: Number(SG_GAP) }, (_, i) => [String(bn + BigInt(i + 1)), String(bn - BigInt(i + 1))]).flat();
     }).filter(p => /^700[0-9]\d{10}$/.test(p) && !seen.has(p)))];
-    if (!probeIds.length) return;
+    if (!probeIds.length) { emit('SG probe: no candidates'); return; }
     const chunks = [];
     for (let i = 0; i < probeIds.length; i += 50) chunks.push(probeIds.slice(i, i + 50));
     let found = 0;
@@ -904,6 +940,7 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
   await Promise.all([
     findHK(),
     findJP(hkNsuids),
+    findAU(),
     findSG(hkBase),
     findUS(euPrimary),
   ]);

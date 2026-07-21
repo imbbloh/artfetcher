@@ -729,7 +729,6 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
       return Array.from({ length: Number(SG_GAP) }, (_, i) => [String(bn + BigInt(i + 1)), String(bn - BigInt(i + 1))]).flat();
     }).filter(p => /^700[0-9]\d{10}$/.test(p) && !seen.has(p)))];
     if (!probeIds.length) return;
-    // Chunk into 50 IDs per request to stay within API limits
     const chunks = [];
     for (let i = 0; i < probeIds.length; i += 50) chunks.push(probeIds.slice(i, i + 50));
     let found = 0;

@@ -1,0 +1,36 @@
+name: Update titledb NSUID index
+
+on:
+  schedule:
+    - cron: '0 5 * * *'      # every day at 05:00 UTC
+  workflow_dispatch:          # lets you run it manually from the Actions tab
+
+permissions:
+  contents: write             # allow the job to commit the refreshed data files
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Rebuild titledb index
+        run: node scripts/update-titledb.mjs
+
+      - name: Commit updated data
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/titledb-jp.json data/titledb-hk.json
+          if git diff --cached --quiet; then
+            echo "No titledb changes — nothing to commit."
+          else
+            git commit -m "Auto-update titledb NSUID index ($(date -u +'%Y-%m-%d %H:%M UTC'))"
+            git push
+          fi

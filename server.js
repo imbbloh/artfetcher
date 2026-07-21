@@ -373,8 +373,10 @@ async function findNsuidsPhase1(gameUrl, emit) {
   const rawSlug = extractSlugFromUrl(gameUrl);
   const slug = rawSlug.replace(/-/g, ' ');
   const gameId = gameUrl.match(/\/games\/(\d+)/)?.[1];
-  const q = encodeURIComponent(slug);
-  const words = slug.toLowerCase().split(' ').filter(w => w.length > 2);
+  // Strip leading numeric ID from eshop-prices slugs (e.g. "5425 monster hunter rise" → "monster hunter rise")
+  const searchSlug = slug.replace(/^\d+ /, '');
+  const q = encodeURIComponent(searchSlug);
+  const words = searchSlug.toLowerCase().split(' ').filter(w => w.length > 2);
 
   const seen = new Set();
   const nsuids = [];
@@ -485,15 +487,16 @@ async function findNsuidsPhase1(gameUrl, emit) {
     getAlgoliaKey(emit),
   ]);
 
-  const nameSlug = toNintendoSlug(gameName || slug);
+  const nameSlug = toNintendoSlug(gameName || searchSlug);
   // originalSlug: for nintendo.com inputs, the full slug before stripping (e.g. subnautica-nintendo-switch-2-edition-switch-2)
   const nintendoMatch = gameUrl.match(/nintendo\.com\/[a-z]{2}\/store\/products\/([^/?#]+)/i);
   const originalSlug = nintendoMatch ? nintendoMatch[1] : null;
+  const searchSlugHyphen = toNintendoSlug(searchSlug);
   const slugVariants = [...new Set([
-    nameSlug + '-switch', rawSlug + '-switch', nameSlug, rawSlug,
+    nameSlug + '-switch', searchSlugHyphen + '-switch', nameSlug, searchSlugHyphen,
     ...(originalSlug ? [originalSlug] : []),
   ])];
-  const titleWords = (gameName || slug).toLowerCase().split(/\W+/).filter(w => w.length > 2);
+  const titleWords = (gameName || searchSlug).toLowerCase().split(/\W+/).filter(w => w.length > 2);
 
   await Promise.allSettled([
     // If input was a nintendo.com URL, fetch it directly first (contains nsuid in HTML)

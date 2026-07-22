@@ -1267,8 +1267,9 @@ function startTelegramBot() {
           const cnyToSgd = rates['CNY'];
           const hasDenoms = cur in gcPrices && Object.keys(gcPrices[cur]).length > 0;
 
+          const liveRateDenoms = GIFT_CARD_DENOMS[cur]; // e.g. JPY [500,1000] — no fixed CNY price
           if (hasDenoms && cnyToSgd) {
-            // Gift-card path: DP finds cheapest combination and exact breakdown
+            // Fixed-price gift card path (USD/BRL/CAD/MXN/AUD): DP finds cheapest combo
             const denoms = Object.keys(gcPrices[cur]).map(Number).sort((a, b) => a - b);
             const gcAmount = minGiftCardAmount(amount, denoms);
             const gcResult = minGiftCardCNY(gcAmount, cur);
@@ -1285,8 +1286,27 @@ function startTelegramBot() {
               sgd ? `💵 *S\\$${escGc(sgd)}*` : `_SGD rate unavailable_`,
             ];
             await bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'MarkdownV2' });
+          } else if (liveRateDenoms?.length && cnyToSgd) {
+            // Live-rate gift card path (JPY etc.): denominations known, price via live rate
+            const gcAmount = minGiftCardAmount(amount, liveRateDenoms);
+            // Greedy breakdown — all denoms cost proportionally so greedy is optimal here
+            const breakdown = [];
+            let rem = gcAmount;
+            for (const d of [...liveRateDenoms].sort((a, b) => b - a)) {
+              const count = Math.floor(rem / d);
+              if (count > 0) { breakdown.push(`${count}×${cur} ${d}`); rem -= count * d; }
+            }
+            const sgd = (gcAmount * rates[cur]).toFixed(2);
+            const cny = (gcAmount * rates[cur] / cnyToSgd).toFixed(1);
+            const lines = [
+              `🎴 *${escGc(String(amount))} ${escGc(cur)}* via gift cards`,
+              `🃏 ${escGc(breakdown.join(' + '))}`,
+              `💴 *${escGc(cny)} CNY*`,
+              `💵 *S\\$${escGc(sgd)}*`,
+            ];
+            await bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'MarkdownV2' });
           } else {
-            // Direct live rate for currencies without gift card pricing (JPY, HKD, SGD, etc.)
+            // Direct live rate (no gift card denominations available)
             const sgd = (amount * rates[cur]).toFixed(2);
             await bot.sendMessage(chatId,
               `💱 *${escGc(String(amount))} ${escGc(cur)}* \\= *S\\$${escGc(sgd)}*\n_Live rate \\(${escGc(rateCache.source || 'ECB')}\\)_`,

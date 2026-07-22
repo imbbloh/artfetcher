@@ -615,6 +615,7 @@ async function findNsuidsPhase1(gameUrl, emit) {
 const TITLEDB_REGIONS = {
   US: 'titledb-us.json', JP: 'titledb-jp.json', HK: 'titledb-hk.json',
   AU: 'titledb-au.json', CA: 'titledb-ca.json', BR: 'titledb-br.json', MX: 'titledb-mx.json',
+  SG: 'sg-catalog.json', // scraped from nintendo.com/sg — no blawar/titledb file exists for SG
 };
 const titledbCache = new Map(); // region -> [{nsuid, name, nameEn?}]
 let titledbXref = null;       // titleId -> { jp?, hk?, us? }
@@ -893,7 +894,11 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
 
   // SG: gap probe off HK nsuids (blawar/titledb has no SG region file)
   async function findSG(hkBase) {
-    // Gap probe off HK nsuids
+    // 1. sg-catalog word match (scraped daily from nintendo.com/sg)
+    const tdIds = findNsuidsViaTitledb('SG', gameName, emit);
+    if (tdIds.length) { tdIds.forEach(addNew); return; }
+
+    // 2. Gap probe off HK nsuids
     if (!hkBase.length) { emit('SG probe: no base'); return; }
     const SG_GAP = 50n;
     const probeIds = [...new Set(hkBase.flatMap(b => {

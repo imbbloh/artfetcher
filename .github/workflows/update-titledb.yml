@@ -23,14 +23,17 @@ jobs:
       - name: Rebuild titledb index
         run: node scripts/update-titledb.mjs
 
+      - name: Rebuild SG catalog
+        run: node scripts/update-sg-catalog.mjs
+
       - name: Commit updated data
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/titledb-us.json data/titledb-jp.json data/titledb-hk.json data/titledb-au.json data/titledb-ca.json data/titledb-br.json data/titledb-mx.json data/titledb-xref.json
+          git add data/titledb-us.json data/titledb-jp.json data/titledb-hk.json data/titledb-au.json data/titledb-ca.json data/titledb-br.json data/titledb-mx.json data/titledb-xref.json data/sg-catalog.json
           if git diff --cached --quiet; then
-            echo "No titledb changes — nothing to commit."
+            echo "No data changes — nothing to commit."
           else
-            git commit -m "Auto-update titledb NSUID index ($(date -u +'%Y-%m-%d %H:%M UTC'))"
+            git commit -m "Auto-update NSUID indexes ($(date -u +'%Y-%m-%d %H:%M UTC'))"
             git push
           fi

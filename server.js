@@ -1174,7 +1174,9 @@ function startTelegramBot() {
       .catch(e => console.error('  Telegram setWebhook failed:', e.message));
   } else {
     // Polling mode: local development only
-    bot.deleteWebhook().then(() => bot.startPolling({ interval: 2000, params: { timeout: 10 } }));
+    bot.deleteWebhook()
+      .catch(() => {})
+      .then(() => bot.startPolling({ interval: 2000, params: { timeout: 10 } }));
     console.log('  Telegram bot active (polling).');
   }
   const ESHOP_URL_RE = /https?:\/\/(?:eshop-prices\.com\/games\/|(?:www\.)?dekudeals\.com\/items\/|(?:www\.)?nintendo\.com\/[a-z]{2}\/store\/products\/|store-jp\.nintendo\.com\/item\/software\/D\d+|ec\.nintendo\.com\/[A-Z]{2}\/[a-z_]+\/titles\/\d+)[^\s]*/i;

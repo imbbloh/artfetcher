@@ -120,8 +120,8 @@ function findChromiumExecutable() {
   for (const p of known) { try { if (fs.existsSync(p)) return p; } catch {} }
 }
 
-// Returns the minimum total CNY cost to cover `amount` using available denominations.
-// Uses DP (coin-change variant) to find cheapest combination of gift cards.
+// Returns { cny, breakdown: [{count, denom}] } for the cheapest combination of gift cards
+// that covers `amount` exactly, using DP with choice reconstruction.
 function minGiftCardCNY(amount, currency) {
   const denomPriceMap = gcPrices[currency];
   if (!denomPriceMap) return null;
@@ -132,13 +132,26 @@ function minGiftCardCNY(amount, currency) {
 
   const target = Math.round(amount);
   const dp = new Array(target + 1).fill(Infinity);
+  const choice = new Array(target + 1).fill(-1);
   dp[0] = 0;
   for (let i = 1; i <= target; i++)
     for (const { denom, cny } of denoms)
-      if (denom <= i && dp[i - denom] + cny < dp[i])
+      if (denom <= i && dp[i - denom] + cny < dp[i]) {
         dp[i] = dp[i - denom] + cny;
+        choice[i] = denom;
+      }
 
-  return dp[target] === Infinity ? null : Math.round(dp[target] * 100) / 100;
+  if (dp[target] === Infinity) return null;
+
+  // Reconstruct which denominations were used
+  const counts = {};
+  let rem = target;
+  while (rem > 0) { const d = choice[rem]; counts[d] = (counts[d] || 0) + 1; rem -= d; }
+  const breakdown = Object.entries(counts)
+    .sort((a, b) => Number(b[0]) - Number(a[0]))
+    .map(([d, count]) => ({ count, denom: Number(d) }));
+
+  return { cny: Math.round(dp[target] * 100) / 100, breakdown };
 }
 
 function minGiftCardAmount(price, denoms) {
@@ -1018,10 +1031,10 @@ function buildResultData(gameName, prices, rateResult) {
     if (currency === 'SGD') {
       sgdPrice = effectiveAmount;
     } else if (GC_CURRENCIES.includes(currency) && effectiveAmount != null && cnyToSgd != null) {
-      const cny = minGiftCardCNY(effectiveAmount, currency);
-      if (cny != null) {
-        gcCnyPrice = cny;
-        sgdPrice = cny * cnyToSgd;
+      const gcResult = minGiftCardCNY(effectiveAmount, currency);
+      if (gcResult != null) {
+        gcCnyPrice = gcResult.cny;
+        sgdPrice = gcResult.cny * cnyToSgd;
       } else if (sgdRates[currency] != null) {
         sgdPrice = effectiveAmount * sgdRates[currency];
       }
@@ -1255,26 +1268,19 @@ function startTelegramBot() {
           const hasDenoms = cur in gcPrices && Object.keys(gcPrices[cur]).length > 0;
 
           if (hasDenoms && cnyToSgd) {
-            // Gift-card path: find minimum cards needed, compute CNY → SGD
+            // Gift-card path: DP finds cheapest combination and exact breakdown
             const denoms = Object.keys(gcPrices[cur]).map(Number).sort((a, b) => a - b);
             const gcAmount = minGiftCardAmount(amount, denoms);
-            const cny = minGiftCardCNY(gcAmount, cur);
+            const gcResult = minGiftCardCNY(gcAmount, cur);
+            const cny = gcResult?.cny ?? null;
             const sgd = cny !== null ? (cny * cnyToSgd).toFixed(2) : null;
-
-            // Build card breakdown
-            const denomPrices = Object.entries(gcPrices[cur]).map(([d, c]) => ({ d: Number(d), c }));
-            const breakdown = [];
-            let remaining = gcAmount;
-            for (const { d, c } of denomPrices.sort((a, b) => b.d - a.d)) {
-              const count = Math.floor(remaining / d);
-              if (count > 0) { breakdown.push({ count, d }); remaining -= count * d; }
-            }
-            const totalCards = breakdown.reduce((s, b) => s + b.count, 0);
-            const breakdownStr = breakdown.map(b => `${b.count}×${cur} ${b.d}`).join(' \\+ ');
+            const breakdownStr = gcResult
+              ? gcResult.breakdown.map(b => `${b.count}×${cur} ${b.denom}`).join(' \\+ ')
+              : escGc(String(gcAmount));
 
             const lines = [
               `🎴 *${escGc(String(amount))} ${escGc(cur)}* via gift cards`,
-              `🃏 *${totalCards} card${totalCards > 1 ? 's' : ''}* — ${breakdownStr}`,
+              `🃏 ${breakdownStr}`,
               `💴 *${escGc(String(cny))} CNY*`,
               sgd ? `💵 *S\\$${escGc(sgd)}*` : `_SGD rate unavailable_`,
             ];

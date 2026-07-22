@@ -13,10 +13,12 @@ const HEADERS = {
 async function fetchPage(page) {
   const params = new URLSearchParams({
     opt_sshow: '1',
-    opt_hard: '1_HAC',
     limit: String(LIMIT),
     page: String(page),
   });
+  // Include both Switch 1 (1_HAC) and Switch 2 (2_HACA) titles
+  params.append('opt_hard', '1_HAC');
+  params.append('opt_hard', '2_HACA');
   const res = await fetch(`${BASE}?${params}`, { headers: HEADERS, signal: AbortSignal.timeout(20000) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();

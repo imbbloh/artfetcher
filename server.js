@@ -39,7 +39,7 @@ const ESHOP_URL = {
   'Australia':     (id) => `https://ec.nintendo.com/AU/en/titles/${id}`,
   'Japan':         (id) => `https://ec.nintendo.com/JP/ja/titles/${id}`,
   'Hong Kong':     (id) => `https://ec.nintendo.com/HK/zh/titles/${id}`,
-  'Singapore':     (id) => `https://ec.nintendo.com/SG//titles/${id}`,
+  'Singapore':     (id) => `https://www.nintendo.com/sg/games/detail.html?id=${id}`,
 };
 
 // CNY price per gift-card denomination. null = not set (falls back to live rate).

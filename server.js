@@ -1397,12 +1397,12 @@ function startTelegramBot() {
 
     } else if (/^\/start|\/help/.test(text)) {
       await bot.sendMessage(chatId,
-        '👋 Send me a game name or link and I\'ll show you prices across regions in SGD\\.\n\n' +
-        '*Game search:*\n• Just type the game name, e\\.g\\. `Pokemon Violet`\n\n' +
-        '*Supported URLs:*\n• eshop\\-prices\\.com/games/\\.\\.\\.\n• dekudeals\\.com/items/\\.\\.\\.\n• nintendo\\.com/\\*/store/products/\\.\\.\\.\n\n' +
-        '*Gift card commands:*\n• `/giftcards` — view all current CNY prices\n• `/updategiftcard USD 10 60` — update an existing denomination\n• `/addgiftcard USD 25 150` — add a new denomination\n\n' +
-        '*Price solver:*\n• `/solver USD 5\\.05` — find up to 5 combos of games that add up exactly to that amount \\(USD, CAD, MXN, BRL\\)\n\n' +
-        '*Example:*\n`Pokemon Violet`\n`https://eshop\\-prices\\.com/games/17496\\-cyberpunk\\-2077\\-ultimate\\-edition`',
+        '👋 Send a game name or link to get Nintendo eShop prices across 8 regions in SGD\\.\n\n' +
+        '🎮 *Search:* Just type the game name\ne\\.g\\. `Monster Hunter Rise`\n\n' +
+        '🌐 *Supported URLs:*\n• eshop\\-prices\\.com/games/\\.\\.\\.\n• dekudeals\\.com/items/\\.\\.\\.\n• nintendo\\.com/\\*/store/products/\\.\\.\\.\n\n' +
+        '🎁 *Gift cards:*\n• `/giftcards` — view CNY prices\n• `/updategiftcard USD 10 60`\n• `/addgiftcard USD 25 150`\n\n' +
+        '🧮 *Solver:*\n• `/solver USD 5\\.05`\n\n' +
+        '🇺🇸🇨🇦🇧🇷🇲🇽🇯🇵🇭🇰🇸🇬🇦🇺',
         { parse_mode: 'MarkdownV2' }
       );
 

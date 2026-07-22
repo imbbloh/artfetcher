@@ -1267,12 +1267,14 @@ function startTelegramBot() {
             let remaining = gcAmount;
             for (const { d, c } of denomPrices.sort((a, b) => b.d - a.d)) {
               const count = Math.floor(remaining / d);
-              if (count > 0) { breakdown.push(`${count}×${cur} ${d}`); remaining -= count * d; }
+              if (count > 0) { breakdown.push({ count, d }); remaining -= count * d; }
             }
+            const totalCards = breakdown.reduce((s, b) => s + b.count, 0);
+            const breakdownStr = breakdown.map(b => `${b.count}×${cur} ${b.d}`).join(' \\+ ');
 
             const lines = [
               `🎴 *${escGc(String(amount))} ${escGc(cur)}* via gift cards`,
-              `🃏 ${escGc(breakdown.join(' + '))}`,
+              `🃏 *${totalCards} card${totalCards > 1 ? 's' : ''}* — ${breakdownStr}`,
               `💴 *${escGc(String(cny))} CNY*`,
               sgd ? `💵 *S\\$${escGc(sgd)}*` : `_SGD rate unavailable_`,
             ];

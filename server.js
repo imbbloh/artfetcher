@@ -1397,11 +1397,10 @@ function startTelegramBot() {
 
     } else if (/^\/start|\/help/.test(text)) {
       await bot.sendMessage(chatId,
-        '👋 Send a game name or link to get Nintendo eShop prices across 8 regions in SGD\\.\n\n' +
-        '🎮 *Search:* Just type the game name\ne\\.g\\. `Monster Hunter Rise`\n\n' +
+        '🎮 *Search:* Just type the game name\ne\\.g\\. Monster Hunter Rise\n\n' +
         '🌐 *Supported URLs:*\n• eshop\\-prices\\.com/games/\\.\\.\\.\n• dekudeals\\.com/items/\\.\\.\\.\n• nintendo\\.com/\\*/store/products/\\.\\.\\.\n\n' +
-        '🎁 *Gift cards:*\n• `/giftcards` — view CNY prices\n• `/updategiftcard USD 10 60`\n• `/addgiftcard USD 25 150`\n\n' +
-        '🧮 *Solver:*\n• `/solver USD 5\\.05`\n\n' +
+        '🎁 *Gift cards:*\n• /giftcards — view CNY prices\n• /updategiftcard USD 10 60\n• /addgiftcard USD 25 150\n\n' +
+        '🧮 *Solver:*\n• /solver USD 5\\.05\n\n' +
         '🇺🇸🇨🇦🇧🇷🇲🇽🇯🇵🇭🇰🇸🇬🇦🇺',
         { parse_mode: 'MarkdownV2' }
       );

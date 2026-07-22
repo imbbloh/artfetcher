@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Builds artefacts from blawar/titledb:
-//   data/titledb-{us,jp,hk,au,sg,ca,br,mx}.json — [{nsuid, name, nameEn?}] for word-match fallback
-//   data/titledb-xref.json — {titleId: {us?,jp?,hk?,au?,sg?,ca?,br?,mx?}} for cross-region lookup
+//   data/titledb-{us,jp,hk,au,ca,br,mx}.json — [{nsuid, name, nameEn?}] for word-match fallback
+//   data/titledb-xref.json — {titleId: {us?,jp?,hk?,au?,ca?,br?,mx?}} for cross-region lookup
+// Note: SG.en.json does not exist in blawar/titledb; SG uses HK gap-probing instead.
 // Run daily by .github/workflows/update-titledb.yml.
 import { mkdir, writeFile } from 'node:fs/promises';
 
@@ -17,12 +18,11 @@ async function fetchRaw(file) {
 async function main() {
   await mkdir('data', { recursive: true });
 
-  const [usRaw, jpRaw, hkRaw, auRaw, sgRaw, caRaw, brRaw, mxRaw] = await Promise.all([
+  const [usRaw, jpRaw, hkRaw, auRaw, caRaw, brRaw, mxRaw] = await Promise.all([
     fetchRaw('US.en.json'),
     fetchRaw('JP.ja.json'),
     fetchRaw('HK.zh.json'),
     fetchRaw('AU.en.json'),
-    fetchRaw('SG.en.json'),
     fetchRaw('CA.en.json'),
     fetchRaw('BR.pt.json'),
     fetchRaw('MX.es.json'),
@@ -79,7 +79,6 @@ async function main() {
   const jpEntries = buildEntries(jpRaw, 'jp');
   const hkEntries = buildEntries(hkRaw, 'hk');
   const auEntries = buildEntries(auRaw, 'au');
-  const sgEntries = buildEntries(sgRaw, 'sg');
   const caEntries = buildEntries(caRaw, 'ca');
   const brEntries = buildEntries(brRaw, 'br');
   const mxEntries = buildEntries(mxRaw, 'mx');
@@ -89,7 +88,6 @@ async function main() {
     'titledb-jp.json': jpEntries,
     'titledb-hk.json': hkEntries,
     'titledb-au.json': auEntries,
-    'titledb-sg.json': sgEntries,
     'titledb-ca.json': caEntries,
     'titledb-br.json': brEntries,
     'titledb-mx.json': mxEntries,
@@ -105,7 +103,7 @@ async function main() {
     const withEn = data.filter(e => e.nameEn).length;
     console.log(`✓ data/${f} — ${data.length} titles${withEn ? ` (${withEn} with English name)` : ''}`);
   }
-  const fields = ['us', 'jp', 'hk', 'au', 'sg', 'ca', 'br', 'mx'];
+  const fields = ['us', 'jp', 'hk', 'au', 'ca', 'br', 'mx'];
   console.log(`✓ data/titledb-xref.json — ${Object.keys(xref).length} title IDs (${fields.map(f => `${f}:${count(f)}`).join(' ')})`);
 }
 

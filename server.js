@@ -601,8 +601,7 @@ async function findNsuidsPhase1(gameUrl, emit) {
 // of holding an 80MB+ parsed object in memory during a live Telegram request.
 const TITLEDB_REGIONS = {
   US: 'titledb-us.json', JP: 'titledb-jp.json', HK: 'titledb-hk.json',
-  AU: 'titledb-au.json', SG: 'titledb-sg.json',
-  CA: 'titledb-ca.json', BR: 'titledb-br.json', MX: 'titledb-mx.json',
+  AU: 'titledb-au.json', CA: 'titledb-ca.json', BR: 'titledb-br.json', MX: 'titledb-mx.json',
 };
 const titledbCache = new Map(); // region -> [{nsuid, name, nameEn?}]
 let titledbXref = null;       // titleId -> { jp?, hk?, us? }
@@ -879,17 +878,9 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
     } catch (e) { emit(`AU probe: ${e.message.slice(0, 50)}`); }
   }
 
-  // SG: xref → word-match → gap probe off HK nsuids
+  // SG: gap probe off HK nsuids (blawar/titledb has no SG region file)
   async function findSG(hkBase) {
-    // 1. xref: US NSUID -> title ID -> SG NSUID
-    const xrefId = findNsuidViaXref(usNsuid, 'SG', emit);
-    if (xrefId) { addNew(xrefId); return; }
-
-    // 2. titledb word match
-    const tdIds = findNsuidsViaTitledb('SG', gameName, emit);
-    if (tdIds.length) { tdIds.forEach(addNew); return; }
-
-    // 3. Gap probe off HK nsuids
+    // Gap probe off HK nsuids
     if (!hkBase.length) { emit('SG probe: no base'); return; }
     const SG_GAP = 50n;
     const probeIds = [...new Set(hkBase.flatMap(b => {

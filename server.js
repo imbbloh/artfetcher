@@ -1162,7 +1162,10 @@ function startTelegramBot() {
   try { const pkg = require('node-telegram-bot-api'); TelegramBot = pkg.default ?? pkg; }
   catch { console.error('  node-telegram-bot-api not installed.'); return; }
 
-  const bot = new TelegramBot(token, { polling: { interval: 2000, autoStart: true, params: { timeout: 10 } } });
+  const bot = new TelegramBot(token, { polling: false });
+  // deleteWebhook terminates any lingering getUpdates session on Telegram's side
+  // (happens during Render rolling restarts when old+new instance briefly overlap)
+  bot.deleteWebhook().then(() => bot.startPolling({ interval: 2000, params: { timeout: 10 } }));
   console.log('  Telegram bot active.');
   const ESHOP_URL_RE = /https?:\/\/(?:eshop-prices\.com\/games\/|(?:www\.)?dekudeals\.com\/items\/|(?:www\.)?nintendo\.com\/[a-z]{2}\/store\/products\/|store-jp\.nintendo\.com\/item\/software\/D\d+|ec\.nintendo\.com\/[A-Z]{2}\/[a-z_]+\/titles\/\d+)[^\s]*/i;
 
@@ -1400,7 +1403,12 @@ function startTelegramBot() {
     }
   });
 
-  bot.on('polling_error', (err) => console.error('Telegram polling error:', err.message));
+  bot.on('polling_error', (err) => {
+    console.error('Telegram polling error:', err.message);
+    if (err.message.includes('409')) {
+      bot.stopPolling().then(() => setTimeout(() => bot.startPolling({ interval: 2000, params: { timeout: 10 } }), 5000));
+    }
+  });
 }
 
 // ─── Start ────────────────────────────────────────────────────────────────────

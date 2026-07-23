@@ -810,6 +810,15 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
     const xrefId = findNsuidViaXref(usNsuid, 'HK', emit);
     if (xrefId) { addNew(xrefId); }
 
+    // 1b. ec.nintendo.com redirect via titleId (titledb → switchbrew fallback)
+    if (newNsuids.length === beforeCount) {
+      const titleId = getTitleIdForNsuid(usNsuid, emit) || getTitleIdFromSwitchbrew(gameName, 'HK', emit);
+      if (titleId) {
+        const ecId = await resolveNsuidViaEc(titleId, 'HK', emit);
+        if (ecId) addNew(ecId);
+      }
+    }
+
     // 2. titledb word match
     if (newNsuids.length === beforeCount) {
       const tdIds = findNsuidsViaTitledb('HK', hkLocalTitle || gameName, emit);

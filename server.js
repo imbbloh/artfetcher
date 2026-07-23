@@ -258,17 +258,26 @@ async function getAlgoliaKey(emit) {
   if (algoliaKeyCache.key && now - algoliaKeyCache.time < ALGOLIA_KEY_TTL) return algoliaKeyCache.key;
   emit('Scanning Nintendo.com bundles for Algolia key...');
   try {
-    const root = await axios.get('https://www.nintendo.com/', { timeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0' } });
+    const root = await axios.get('https://www.nintendo.com/', { timeout: 8000, headers: { 'User-Agent': 'Mozilla/5.0' } });
     const bundles = [...new Set((String(root.data).match(/\/_next\/static\/[^"' ]+\.js/g) || []))].slice(0, 20);
-    const results = await Promise.allSettled(bundles.map(p => axios.get(`https://www.nintendo.com${p}`, { timeout: 8000, headers: { 'User-Agent': 'Mozilla/5.0' } })));
-    for (const r of results) {
-      if (r.status !== 'fulfilled') continue;
-      const text = String(r.value.data);
-      if (!text.includes(ALGOLIA_APP_ID)) continue;
-      const m = text.match(new RegExp(`${ALGOLIA_APP_ID}.{0,150}?([a-f0-9]{32})|([a-f0-9]{32}).{0,150}?${ALGOLIA_APP_ID}`, 's'));
-      const key = m?.[1] || m?.[2];
-      if (key) { algoliaKeyCache = { key, time: now }; emit(`Algolia key: ${key.slice(0, 8)}...`); return key; }
-    }
+    // Race: resolve as soon as any bundle yields the key
+    await new Promise(resolve => {
+      let done = false, pending = bundles.length;
+      if (!pending) { resolve(); return; }
+      for (const p of bundles) {
+        axios.get(`https://www.nintendo.com${p}`, { timeout: 5000, headers: { 'User-Agent': 'Mozilla/5.0' } })
+          .then(r => {
+            if (done) return;
+            const text = String(r.data);
+            if (!text.includes(ALGOLIA_APP_ID)) return;
+            const m = text.match(new RegExp(`${ALGOLIA_APP_ID}.{0,150}?([a-f0-9]{32})|([a-f0-9]{32}).{0,150}?${ALGOLIA_APP_ID}`, 's'));
+            const key = m?.[1] || m?.[2];
+            if (key) { done = true; algoliaKeyCache = { key, time: now }; emit(`Algolia key: ${key.slice(0, 8)}...`); resolve(); }
+          })
+          .catch(() => {})
+          .finally(() => { if (--pending === 0) resolve(); });
+      }
+    });
   } catch (e) { emit(`Algolia scan: ${e.message.slice(0, 60)}`); }
   return algoliaKeyCache.key;
 }
@@ -277,7 +286,7 @@ async function getAlgoliaKey(emit) {
 
 async function fetchNsuidsFrom(url, label, emit) {
   try {
-    const res = await axios.get(url, { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'text/html,application/json' } });
+    const res = await axios.get(url, { timeout: 4000, headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'text/html,application/json' } });
     const found = [...new Set((String(res.data).match(/700[0-9]\d{10}/g) || []))];
     if (found.length) emit(`${label}: ${found.length} nsuid(s)`);
     return found;
@@ -781,7 +790,7 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
   // Search a Nintendo catalog endpoint with a query, return { ids, localTitles }
   async function searchCatalog(url, label) {
     try {
-      const res = await axios.get(url, { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'ja,zh,en' } });
+      const res = await axios.get(url, { timeout: 5000, headers: { 'User-Agent': 'Mozilla/5.0', 'Accept-Language': 'ja,zh,en' } });
       const docs = res.data?.response?.docs || [];
       const ids = [];
       const localTitles = [];
@@ -844,7 +853,7 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
           }).filter(p => /^700[0-9]\d{10}$/.test(p) && !seen.has(p)))].slice(0, 50);
           if (probeIds.length) {
             try {
-              const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=HK&lang=zh&ids=${probeIds.join(',')}`, { timeout: 20000 });
+              const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=HK&lang=zh&ids=${probeIds.join(',')}`, { timeout: 8000 });
               const hits = (res.data?.prices || []).filter(p => p.sales_status !== 'not_found' && (p.regular_price || p.discount_price));
               hits.forEach(p => addNew(String(p.title_id)));
               emit(`HK probe: ${hits.length} found`);
@@ -893,7 +902,7 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
     // 3. store-jp search (accessible from Render)
     try {
       const res = await axios.get(`https://store-jp.nintendo.com/search/?q=${q}&genre=Game`, {
-        timeout: 10000,
+        timeout: 5000,
         headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept-Language': 'ja,en;q=0.9' },
       });
       const ids = [...new Set((String(res.data).match(/D(700[0-9]\d{10})/g) || []).map(m => m.slice(1)))];
@@ -922,7 +931,7 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
       )];
       if (probeIds.length) {
         try {
-          const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=JP&lang=ja&ids=${probeIds.join(',')}`, { timeout: 20000 });
+          const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=JP&lang=ja&ids=${probeIds.join(',')}`, { timeout: 8000 });
           const hits = (res.data?.prices || []).filter(p => p.sales_status !== 'not_found' && (p.regular_price || p.discount_price));
           hits.forEach(p => addNew(String(p.title_id)));
           emit(`JP probe (off US nsuid): ${hits.length} found`);
@@ -940,7 +949,7 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
       }).filter(p => /^700[0-9]\d{10}$/.test(p) && !seen.has(p)))].slice(0, 50);
       if (probeIds.length) {
         try {
-          const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=JP&lang=ja&ids=${probeIds.join(',')}`, { timeout: 20000 });
+          const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=JP&lang=ja&ids=${probeIds.join(',')}`, { timeout: 8000 });
           const hits = (res.data?.prices || []).filter(p => p.sales_status !== 'not_found' && (p.regular_price || p.discount_price));
           hits.forEach(p => addNew(String(p.title_id)));
           emit(`JP probe (off HK nsuid): ${hits.length} found`);
@@ -969,7 +978,7 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
     }).filter(p => /^700[0-9]\d{10}$/.test(p) && !seen.has(p)))].slice(0, 50);
     if (!probeIds.length) { emit('AU probe: no candidates'); return; }
     try {
-      const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=AU&lang=en&ids=${probeIds.join(',')}`, { timeout: 20000 });
+      const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=AU&lang=en&ids=${probeIds.join(',')}`, { timeout: 8000 });
       const hits = (res.data?.prices || []).filter(p => p.sales_status !== 'not_found' && (p.regular_price || p.discount_price));
       hits.forEach(p => addNew(String(p.title_id)));
       emit(`AU probe: ${hits.length} found`);
@@ -995,7 +1004,7 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
     let found = 0;
     for (const chunk of chunks) {
       try {
-        const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=SG&lang=en&ids=${chunk.join(',')}`, { timeout: 20000 });
+        const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=SG&lang=en&ids=${chunk.join(',')}`, { timeout: 8000 });
         const hits = (res.data?.prices || []).filter(p => p.sales_status !== 'not_found' && (p.regular_price || p.discount_price));
         hits.forEach(p => { addNew(String(p.title_id)); found++; });
       } catch (e) { emit(`SG probe chunk: ${e.message.slice(0, 50)}`); break; }
@@ -1025,7 +1034,7 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
     }
     if (!probeIds.length) return;
     try {
-      const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=US&lang=en&ids=${[...new Set(probeIds)].slice(0, 80).join(',')}`, { timeout: 20000 });
+      const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=US&lang=en&ids=${[...new Set(probeIds)].slice(0, 80).join(',')}`, { timeout: 8000 });
       const found = (res.data?.prices || []).filter(p => p.sales_status !== 'not_found' && (p.regular_price || p.discount_price));
       found.forEach(p => addNew(String(p.title_id)));
       emit(`US probe: ${found.length} found`);
@@ -1075,7 +1084,7 @@ async function getNintendoPrices(nsuids, emit) {
     Object.entries(COUNTRY_CODE).map(async ([country, code]) => {
       for (const chunk of chunks) {
         try {
-          const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=${code}&lang=en&ids=${chunk.join(',')}`, { timeout: 20000 });
+          const res = await axios.get(`https://api.ec.nintendo.com/v1/price?country=${code}&lang=en&ids=${chunk.join(',')}`, { timeout: 8000 });
           const prices = res.data?.prices || [];
           const found = prices.filter(p => p.sales_status !== 'not_found' && (p.discount_price || p.regular_price));
           if (country === 'US') emit(`US price API: ${prices.length} total, ${found.length} priced, ${prices.length - found.length} not_found`);

@@ -671,6 +671,37 @@ function findNsuidViaXref(usNsuid, region, emit) {
   return nsuid || null;
 }
 
+// Look up titleId (id) for a given nsuid from any region's titledb file.
+function getTitleIdForNsuid(nsuid, emit) {
+  if (!nsuid) return null;
+  // Check xref reverse map first (fastest)
+  loadXref(emit);
+  if (usNsuidToTitleId[nsuid]) return usNsuidToTitleId[nsuid];
+  // Search all region files for a matching nsuid with an id field
+  for (const region of ['US', 'AU', 'JP', 'HK', 'CA', 'BR', 'MX']) {
+    const entries = loadTitledb(region, emit);
+    const found = entries.find(e => e.nsuid === nsuid && e.id);
+    if (found) return found.id;
+  }
+  return null;
+}
+
+// Resolve a regional nsuid via ec.nintendo.com/apps/{titleId}/{region} redirect.
+async function resolveNsuidViaEc(titleId, region, emit) {
+  if (!titleId) return null;
+  try {
+    const res = await axios.get(`https://ec.nintendo.com/apps/${titleId}/${region}`, {
+      timeout: 10000, maxRedirects: 0, validateStatus: s => s < 400,
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+    });
+    const location = res.headers?.location || '';
+    const m = location.match(/700[0-9]\d{10}/);
+    if (m) { emit(`ec.nintendo.com/apps ${region}: ${titleId} → ${m[0]}`); return m[0]; }
+    emit(`ec.nintendo.com/apps ${region}: no nsuid in Location (${res.status} ${location.slice(0, 60)})`);
+  } catch (e) { emit(`ec.nintendo.com/apps ${region}: ${e.message.slice(0, 60)}`); }
+  return null;
+}
+
 // Best-effort match: works well for Western titles kept untranslated in JP/HK
 // listings (e.g. "EA SPORTS FC™ 26"), weak for fully localized titles — that's
 // fine since this only runs when the live catalog search already found nothing.
@@ -745,6 +776,15 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
     const xrefId = findNsuidViaXref(usNsuid, 'HK', emit);
     if (xrefId) { addNew(xrefId); }
 
+    // 1b. ec.nintendo.com redirect via titleId (for games in titledb but missing HK xref entry)
+    if (newNsuids.length === beforeCount) {
+      const titleId = getTitleIdForNsuid(usNsuid, emit);
+      if (titleId) {
+        const ecId = await resolveNsuidViaEc(titleId, 'HK', emit);
+        if (ecId) addNew(ecId);
+      }
+    }
+
     // 2. titledb word match
     if (newNsuids.length === beforeCount) {
       const tdIds = findNsuidsViaTitledb('HK', hkLocalTitle || gameName, emit);
@@ -800,6 +840,16 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
     // 1. xref: US NSUID -> title ID -> JP NSUID (most reliable)
     const xrefId = findNsuidViaXref(usNsuid, 'JP', emit);
     if (xrefId) { addNew(xrefId); return; }
+
+    // 1b. ec.nintendo.com redirect via titleId (for games in titledb but missing JP xref entry,
+    //     or new Switch 2 titles where id can be found in another region's titledb file)
+    if (usNsuid) {
+      const titleId = getTitleIdForNsuid(usNsuid, emit);
+      if (titleId) {
+        const ecId = await resolveNsuidViaEc(titleId, 'JP', emit);
+        if (ecId) { addNew(ecId); return; }
+      }
+    }
 
     // 2. titledb word match (works for games in titledb but not in US catalog)
     const tdIds = findNsuidsViaTitledb('JP', searchQuery, emit);

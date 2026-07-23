@@ -491,7 +491,7 @@ async function findNsuidsPhase1(gameUrl, emit) {
       // (can't know platform from title alone; Switch 2 games live at a different URL suffix)
       originalSlug ? (async () => {
         const base = `https://www.nintendo.com/us/store/products/${rawSlug}`;
-        for (const url of [`${base}-switch-2/`, `${base}-switch/`]) {
+        for (const url of [`${base}-switch/`, `${base}-switch-2/`]) {
           const ids = (await fetchNsuidsFrom(url, `Nintendo.com (${url.includes('switch-2') ? 'switch-2' : 'switch'})`, emit)).filter(id => id.startsWith('7001'));
           if (ids.length) { addMany(ids); break; }
         }

@@ -16,9 +16,7 @@ async function fetchPage(page) {
     limit: String(LIMIT),
     page: String(page),
   });
-  // Include both Switch 1 (1_HAC) and Switch 2 (2_HACA) titles
-  params.append('opt_hard', '1_HAC');
-  params.append('opt_hard', '2_HACA');
+  // No opt_hard filter — return all hardware so Switch 1 and Switch 2 titles are included
   const res = await fetch(`${BASE}?${params}`, { headers: HEADERS, signal: AbortSignal.timeout(20000) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();

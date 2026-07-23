@@ -616,6 +616,7 @@ const TITLEDB_REGIONS = {
   US: 'titledb-us.json', JP: 'titledb-jp.json', HK: 'titledb-hk.json',
   AU: 'titledb-au.json', CA: 'titledb-ca.json', BR: 'titledb-br.json', MX: 'titledb-mx.json',
   SG: 'sg-catalog.json', // scraped from nintendo.com/sg — no blawar/titledb file exists for SG
+  HK_CATALOG: 'hk-catalog.json', // scraped daily from searching.nintendo-asia.com/zh_HK
 };
 const titledbCache = new Map(); // region -> [{nsuid, name, nameEn?}]
 let titledbXref = null;       // titleId -> { jp?, hk?, us? }
@@ -810,7 +811,13 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
     const xrefId = findNsuidViaXref(usNsuid, 'HK', emit);
     if (xrefId) { addNew(xrefId); }
 
-    // 1b. ec.nintendo.com redirect via titleId (titledb → switchbrew fallback)
+    // 1b. hk-catalog word match (scraped daily from searching.nintendo-asia.com/zh_HK)
+    if (newNsuids.length === beforeCount) {
+      const hkCatIds = findNsuidsViaTitledb('HK_CATALOG', hkLocalTitle || gameName, emit);
+      hkCatIds.forEach(addNew);
+    }
+
+    // 1d. ec.nintendo.com redirect via titleId — only when CHN in switchbrew (game is on HK eshop)
     if (newNsuids.length === beforeCount) {
       const titleId = getTitleIdForNsuid(usNsuid, emit) || getTitleIdFromSwitchbrew(gameName, 'HK', emit);
       if (titleId) {

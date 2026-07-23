@@ -490,7 +490,8 @@ async function findNsuidsPhase1(gameUrl, emit) {
       // Fetch nintendo.com product page — try plain slug, then -switch-2, then -switch
       // (can't know platform from title alone; Switch 2 games live at a different URL suffix)
       originalSlug ? (async () => {
-        const base = `https://www.nintendo.com/us/store/products/${originalSlug}`;
+        // rawSlug already has -switch/-switch-2 stripped, so variants are always clean
+        const base = `https://www.nintendo.com/us/store/products/${rawSlug}`;
         const variants = [...new Set([gameUrl, `${base}-switch-2/`, `${base}-switch/`])];
         for (const url of variants) {
           const suffix = url.replace(base, '').replace(/\//g, '') || '(plain)';

@@ -1,26 +1,20 @@
 #!/usr/bin/env node
 // Builds data/hk-catalog.json — [{nsuid, name}] for Hong Kong eShop NSUID lookup.
-// Uses the searching.nintendo-asia.com/zh_HK Solr API.
+// Uses the search.nintendo.jp/nintendo_soft_hk API (same backend as nintendo.com/hk).
 import { mkdir, writeFile } from 'node:fs/promises';
 
-const BASE = 'https://searching.nintendo-asia.com/zh_HK/select';
-const ROWS = 200;
+const BASE = 'https://search.nintendo.jp/nintendo_soft_hk/search.json';
+const LIMIT = 200;
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
   'Referer': 'https://store.nintendo.com.hk/',
 };
 
-const NSUID_RE = /^700[0-9]\d{10}$/;
-const TITLE_ID_RE = /^0[14]00[0-9a-f]{12}$/i;
-
-async function fetchPage(start) {
+async function fetchPage(page) {
   const params = new URLSearchParams({
-    q: '*',
-    fq: 'type:GAME',
-    rows: String(ROWS),
-    start: String(start),
-    wt: 'json',
-    fl: 'title,nsuid_txt,title_id_txt,image_url_h2x1_txt',
+    opt_sshow: '1',
+    limit: String(LIMIT),
+    page: String(page),
   });
   const res = await fetch(`${BASE}?${params}`, { headers: HEADERS, signal: AbortSignal.timeout(20000) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -30,30 +24,31 @@ async function fetchPage(start) {
 async function main() {
   await mkdir('data', { recursive: true });
 
-  console.log('Fetching HK catalog from searching.nintendo-asia.com...');
-  const first = await fetchPage(0);
-  const total = first?.response?.numFound ?? 0;
-  const totalPages = Math.ceil(total / ROWS);
+  console.log('Fetching HK catalog from search.nintendo.jp...');
+  const first = await fetchPage(1);
+  const total = first?.result?.total ?? 0;
+  const totalPages = Math.ceil(total / LIMIT);
   console.log(`Total: ${total} games, ${totalPages} pages`);
 
+  const NSUID_RE = /^700[0-9]\d{10}$/;
+  const TITLE_ID_RE = /^0[14]00[0-9a-f]{12}$/i;
   const entries = [];
-  const addDocs = (docs) => {
-    for (const doc of (docs || [])) {
-      const nsuid = (doc.nsuid_txt || [])[0];
-      if (!nsuid || !NSUID_RE.test(String(nsuid)) || !doc.title) continue;
-      const entry = { nsuid: String(nsuid), name: doc.title };
-      const id = (doc.title_id_txt || [])[0];
+  const addItems = (items) => {
+    for (const item of (items || [])) {
+      if (!item.nsuid || !NSUID_RE.test(String(item.nsuid)) || !item.title) continue;
+      const entry = { nsuid: String(item.nsuid), name: item.title };
+      const id = item.title_id || item.titleId || item.product_id;
       if (id && TITLE_ID_RE.test(String(id))) entry.id = String(id).toLowerCase();
       entries.push(entry);
     }
   };
 
-  addDocs(first?.response?.docs);
+  addItems(first?.result?.items);
 
-  for (let page = 1; page < totalPages; page++) {
-    const data = await fetchPage(page * ROWS);
-    addDocs(data?.response?.docs);
-    process.stdout.write(`\r  Page ${page + 1}/${totalPages} — ${entries.length} entries`);
+  for (let page = 2; page <= totalPages; page++) {
+    const data = await fetchPage(page);
+    addItems(data?.result?.items);
+    process.stdout.write(`\r  Page ${page}/${totalPages} — ${entries.length} entries`);
   }
   console.log();
 

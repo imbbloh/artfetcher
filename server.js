@@ -200,12 +200,17 @@ async function getExchangeRates(emit) {
   if (rateCache && now - rateCacheTime < RATE_TTL) { emit('Using cached exchange rates.'); return rateCache; }
   emit('Fetching live exchange rates...');
   const baseCurrencies = [...new Set([...Object.values(COUNTRY_CURRENCY).filter(c => c !== 'SGD'), 'CNY'])].join(',');
-  const res = await axios.get(`https://api.frankfurter.app/latest?from=SGD&to=${baseCurrencies}`, { timeout: 10000 });
-  const rates = { SGD: 1 };
-  for (const [cur, rate] of Object.entries(res.data.rates)) rates[cur] = 1 / rate;
-  rateCache = { rates, source: 'frankfurter.app / ECB (live daily)' };
-  rateCacheTime = now;
-  emit('Exchange rates ready.');
+  try {
+    const res = await axios.get(`https://api.frankfurter.app/latest?from=SGD&to=${baseCurrencies}`, { timeout: 8000 });
+    const rates = { SGD: 1 };
+    for (const [cur, rate] of Object.entries(res.data.rates)) rates[cur] = 1 / rate;
+    rateCache = { rates, source: 'frankfurter.app / ECB (live daily)' };
+    rateCacheTime = now;
+    emit('Exchange rates ready.');
+  } catch (e) {
+    emit(`Exchange rates: ${e.message.slice(0, 60)} — ${rateCache ? 'using stale cache' : 'no cache available'}`);
+    if (!rateCache) throw e; // only fatal if we have no cache at all
+  }
   return rateCache;
 }
 

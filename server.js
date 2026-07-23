@@ -549,6 +549,7 @@ async function findNsuidsPhase1(gameUrl, emit) {
           const before = nsuids.length;
           const algIds = [];
           for (const h of hits) { if (h.nsuid) algIds.push(`${h.nsuid}(txt:${(h.nsuid_txt||[]).join('+')})`); add(h.nsuid); addMany(h.nsuid_txt || []); if (!gameName && h.title) gameName = h.title; }
+          if (hits.length) emit(`Algolia fields: ${Object.keys(hits[0]).join(', ')}`);
           emit(`Algolia ${indexName}: ${hits.length} hits, +${nsuids.length - before} new, usNsuid=${usNsuid} [${algIds.join(', ')}]`);
           if (nsuids.length > before) break;
         } catch (e) { emit(`Algolia ${indexName}: ${e.message.slice(0, 50)}`); if (e.response?.status === 403) algoliaKeyCache.time = 0; }

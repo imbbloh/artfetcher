@@ -687,8 +687,9 @@ function getTitleIdForNsuid(nsuid, emit) {
 }
 
 // Resolve a regional nsuid via ec.nintendo.com/apps/{titleId}/{region} redirect.
+// Does NOT work for SG — that region does not redirect.
 async function resolveNsuidViaEc(titleId, region, emit) {
-  if (!titleId) return null;
+  if (!titleId || region === 'SG') return null;
   try {
     const res = await axios.get(`https://ec.nintendo.com/apps/${titleId}/${region}`, {
       timeout: 10000, maxRedirects: 0, validateStatus: s => s < 400,

@@ -490,12 +490,9 @@ async function findNsuidsPhase1(gameUrl, emit) {
       // Fetch nintendo.com product page — try plain slug, then -switch-2, then -switch
       // (can't know platform from title alone; Switch 2 games live at a different URL suffix)
       originalSlug ? (async () => {
-        // rawSlug already has -switch/-switch-2 stripped, so variants are always clean
         const base = `https://www.nintendo.com/us/store/products/${rawSlug}`;
-        const variants = [...new Set([gameUrl, `${base}-switch-2/`, `${base}-switch/`])];
-        for (const url of variants) {
-          const suffix = url.replace(base, '').replace(/\//g, '') || '(plain)';
-          const ids = (await fetchNsuidsFrom(url, `Nintendo.com (${suffix})`, emit)).filter(id => id.startsWith('7001'));
+        for (const url of [`${base}-switch-2/`, `${base}-switch/`]) {
+          const ids = (await fetchNsuidsFrom(url, `Nintendo.com (${url.includes('switch-2') ? 'switch-2' : 'switch'})`, emit)).filter(id => id.startsWith('7001'));
           if (ids.length) { addMany(ids); break; }
         }
       })() : Promise.resolve(),

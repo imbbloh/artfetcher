@@ -622,8 +622,8 @@ let titledbXref = null;       // titleId -> { jp?, hk?, us? }
 let usNsuidToTitleId = null;  // usNsuid -> titleId reverse map, built lazily from xref
 let switchbrewEntries = null; // [{id, name, regions[]}] from switchbrew.org
 
-// switchbrew region codes → our region codes
-const SWITCHBREW_REGION_MAP = { JPN: 'JP', EUR: 'EU', USA: 'US', CHN: 'CN', KOR: 'KR', AUS: 'AU' };
+// switchbrew region codes → our region codes (CHN = HK eshop)
+const SWITCHBREW_REGION_MAP = { JPN: 'JP', EUR: 'EU', USA: 'US', CHN: 'HK', KOR: 'KR', AUS: 'AU' };
 
 function loadSwitchbrew(emit) {
   if (switchbrewEntries) return switchbrewEntries;
@@ -638,8 +638,8 @@ function loadSwitchbrew(emit) {
   return switchbrewEntries;
 }
 
-// Find titleId from switchbrew by game name + target region (e.g. 'JP').
-// Returns the id for the entry whose regions include the target, falling back to any match.
+// Find titleId from switchbrew by game name + target region (e.g. 'JP', 'HK').
+// Returns null if no region-specific entry found (no fallback to unrelated region).
 function getTitleIdFromSwitchbrew(gameName, region, emit) {
   const entries = loadSwitchbrew(emit);
   if (!entries.length || !gameName) return null;
@@ -647,10 +647,10 @@ function getTitleIdFromSwitchbrew(gameName, region, emit) {
   const nameNorm = norm(gameName);
   const matches = entries.filter(e => norm(e.name) === nameNorm);
   if (!matches.length) return null;
-  // Prefer entry whose regions include the target region
   const swRegion = Object.entries(SWITCHBREW_REGION_MAP).find(([,v]) => v === region)?.[0];
-  const regional = swRegion ? matches.find(e => e.regions.includes(swRegion)) : null;
-  const result = regional || matches[0];
+  if (!swRegion) return null;
+  const result = matches.find(e => e.regions.includes(swRegion));
+  if (!result) return null;
   emit(`switchbrew: "${gameName}" → id=${result.id} regions=[${result.regions.join(',')}]`);
   return result.id;
 }
@@ -877,7 +877,8 @@ async function findNsuidsPhase2(gameUrl, { seen, gameName, euNsuids, jpNsuids, h
 
     // 1b. ec.nintendo.com redirect via titleId (titledb → switchbrew fallback)
     if (newNsuids.length === beforeCount) {
-      const titleId = (usNsuid ? getTitleIdForNsuid(usNsuid, emit) : null) || getTitleIdFromSwitchbrew(gameName, 'JP', emit);
+      // Prefer JP-specific titleId from switchbrew (handles per-region splits like Cyberpunk)
+      const titleId = getTitleIdFromSwitchbrew(gameName, 'JP', emit) || (usNsuid ? getTitleIdForNsuid(usNsuid, emit) : null);
       if (titleId) {
         const ecId = await resolveNsuidViaEc(titleId, 'JP', emit);
         if (ecId) { addNew(ecId); return; }

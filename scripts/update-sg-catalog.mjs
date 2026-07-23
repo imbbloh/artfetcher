@@ -31,10 +31,12 @@ async function main() {
   const totalPages = Math.ceil(total / LIMIT);
   console.log(`Total: ${total} games, ${totalPages} pages`);
 
+  const NSUID_RE = /^700[0-9]\d{10}$/;
   const entries = [];
   const addItems = (items) => {
     for (const item of (items || [])) {
-      if (item.nsuid && item.title) entries.push({ nsuid: item.nsuid, name: item.title });
+      if (item.nsuid && NSUID_RE.test(String(item.nsuid)) && item.title)
+        entries.push({ nsuid: String(item.nsuid), name: item.title });
     }
   };
 

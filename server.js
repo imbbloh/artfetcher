@@ -510,7 +510,12 @@ async function findNsuidsPhase1(gameUrl, emit) {
             if (best && !usNsuid) usNsuid = String(best.nsuid);
             const before = nsuids.length;
             const algIds = [];
-            for (const h of hits) { if (h.nsuid) algIds.push(`${h.nsuid}(txt:${(h.nsuid_txt||[]).join('+')})`); add(h.nsuid); addMany(h.nsuid_txt || []); }
+            // Only add NSUIDs from hits that actually match the query (score > 0)
+            for (const h of hits) {
+              const score = titleWords.filter(w => normStr(h.title || '').includes(w)).length;
+              if (h.nsuid) algIds.push(`${h.nsuid}(score:${score})`);
+              if (score > 0) { add(h.nsuid); addMany(h.nsuid_txt || []); }
+            }
             if (best && !gameName) gameName = best.title;
             emit(`Algolia ${indexName}: ${hits.length} hits, +${nsuids.length - before} new, usNsuid=${usNsuid} [${algIds.join(', ')}]`);
             if (nsuids.length > before) break;

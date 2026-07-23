@@ -430,6 +430,31 @@ async function findNsuidsPhase1(gameUrl, emit) {
 
   emit(`Searching for "${slug}"...`);
 
+  // ── Priority 1: titledb-us local word match → US NSUID + xref seeds ──────────
+  {
+    const match = findNsuidsViaTitledb('US', searchSlug, emit);
+    if (match.length) {
+      for (const id of match) { add(id); if (!usNsuid) usNsuid = id; }
+      // Seed other regions via xref
+      const xref = loadXref(emit);
+      const usEntries = loadTitledb('US', emit);
+      const entry = usEntries.find(e => e.nsuid === usNsuid && e.id);
+      if (entry?.id && xref[entry.id]) {
+        const rx = xref[entry.id];
+        if (rx.jp) { add(rx.jp); jpNsuids.push(rx.jp); }
+        if (rx.hk) { add(rx.hk); hkNsuids.push(rx.hk); }
+        if (rx.au) add(rx.au);
+        emit(`xref (${entry.id}): jp=${rx.jp||'-'} hk=${rx.hk||'-'} au=${rx.au||'-'}`);
+      }
+    }
+  }
+
+  // ── Priority 2: sg-catalog local word match → SG NSUID ───────────────────────
+  {
+    const sgIds = findNsuidsViaTitledb('SG', searchSlug, emit);
+    if (sgIds.length) { addMany(sgIds); emit(`sg-catalog local: ${sgIds.join(',')}`); }
+  }
+
   // EU catalog + Algolia key in parallel
   const [,,, algoliaKey] = await Promise.all([
     (async () => {

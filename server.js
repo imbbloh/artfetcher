@@ -556,14 +556,14 @@ async function findNsuidsPhase1(gameUrl, emit) {
     })() : Promise.resolve(),
 
     // eshop-prices.com JSON API (fast, usually 403 on Render)
-    gameId ? axios.get(`https://eshop-prices.com/games/${gameId}.json`, { timeout: 8000 }).then(r => {
+    gameId ? axios.get(`https://eshop-prices.com/games/${gameId}.json`, { timeout: 3000 }).then(r => {
       const ids = (JSON.stringify(r.data).match(/700[0-9]\d{10}/g) || []);
       addMany(ids); if (ids.length) emit(`eshop-prices API: +${ids.length} nsuid(s)`);
     }).catch(e => emit(`eshop-prices API: ${e.message.slice(0, 50)}`)) : Promise.resolve(),
 
     // eshop-prices.com HTML page — Nuxt SSR embeds all regional nsuids (incl. SG/HK) before JS
     gameId ? axios.get(`https://eshop-prices.com/games/${gameId}`, {
-      timeout: 10000,
+      timeout: 3000,
       headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', 'Accept': 'text/html,application/xhtml+xml' },
     }).then(r => {
       const html = String(r.data);

@@ -487,10 +487,17 @@ async function findNsuidsPhase1(gameUrl, emit) {
     const titleWords = normStr(gameName || searchSlug).split(/\W+/).filter(w => w.length > 2);
 
     await Promise.allSettled([
-      // If input was a nintendo.com URL, fetch it directly (contains nsuid in HTML)
-      originalSlug
-        ? fetchNsuidsFrom(gameUrl, 'Nintendo.com (direct)', emit).then(ids => { const kept = ids.filter(id => id.startsWith('7001')); addMany(kept); })
-        : Promise.resolve(),
+      // Fetch nintendo.com product page — try plain slug, then -switch-2, then -switch
+      // (can't know platform from title alone; Switch 2 games live at a different URL suffix)
+      originalSlug ? (async () => {
+        const base = `https://www.nintendo.com/us/store/products/${originalSlug}`;
+        const variants = [...new Set([gameUrl, `${base}-switch-2/`, `${base}-switch/`])];
+        for (const url of variants) {
+          const suffix = url.replace(base, '').replace(/\//g, '') || '(plain)';
+          const ids = (await fetchNsuidsFrom(url, `Nintendo.com (${suffix})`, emit)).filter(id => id.startsWith('7001'));
+          if (ids.length) { addMany(ids); break; }
+        }
+      })() : Promise.resolve(),
 
       // Algolia → verified US nsuid (only if we don't have one yet)
       algoliaKey && !usNsuid ? (async () => {

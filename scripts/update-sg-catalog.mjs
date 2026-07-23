@@ -32,11 +32,15 @@ async function main() {
   console.log(`Total: ${total} games, ${totalPages} pages`);
 
   const NSUID_RE = /^700[0-9]\d{10}$/;
+  const TITLE_ID_RE = /^0[14]00[0-9a-f]{12}$/i;
   const entries = [];
   const addItems = (items) => {
     for (const item of (items || [])) {
-      if (item.nsuid && NSUID_RE.test(String(item.nsuid)) && item.title)
-        entries.push({ nsuid: String(item.nsuid), name: item.title });
+      if (!item.nsuid || !NSUID_RE.test(String(item.nsuid)) || !item.title) continue;
+      const entry = { nsuid: String(item.nsuid), name: item.title };
+      const id = item.title_id || item.titleId || item.product_id;
+      if (id && TITLE_ID_RE.test(String(id))) entry.id = String(id).toLowerCase();
+      entries.push(entry);
     }
   };
 

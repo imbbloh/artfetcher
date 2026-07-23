@@ -51,6 +51,7 @@ async function main() {
       const e = raw[nsuid];
       if (!e?.name) continue;
       const entry = { nsuid, name: e.name };
+      if (e.id) entry.id = e.id;
       const nameEn = e.id ? enByTitleId.get(e.id) : null;
       if (nameEn && nameEn !== e.name) entry.nameEn = nameEn;
       entries.push(entry);
@@ -69,7 +70,9 @@ async function main() {
   for (const nsuid in usRaw) {
     const e = usRaw[nsuid];
     if (!e?.name) continue;
-    usEntries.push({ nsuid, name: e.name });
+    const entry = { nsuid, name: e.name };
+    if (e.id) entry.id = e.id;
+    usEntries.push(entry);
     if (e.id) {
       if (!xref[e.id]) xref[e.id] = {};
       xref[e.id].us = nsuid;

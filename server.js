@@ -725,7 +725,7 @@ async function resolveNsuidViaEc(titleId, region, emit) {
   if (!titleId || region === 'SG') return null;
   try {
     const res = await axios.get(`https://ec.nintendo.com/apps/${titleId}/${region}`, {
-      timeout: 5000, maxRedirects: 0, validateStatus: s => s < 400,
+      timeout: 3000, maxRedirects: 0, validateStatus: s => s < 400,
       headers: { 'User-Agent': 'Mozilla/5.0' },
     });
     const location = res.headers?.location || '';

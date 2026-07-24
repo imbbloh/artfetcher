@@ -208,8 +208,15 @@ async function getExchangeRates(emit) {
     rateCacheTime = now;
     emit('Exchange rates ready.');
   } catch (e) {
-    emit(`Exchange rates: ${e.message.slice(0, 60)} — ${rateCache ? 'using stale cache' : 'no cache available'}`);
-    if (!rateCache) throw e; // only fatal if we have no cache at all
+    if (rateCache) {
+      emit(`Exchange rates: ${e.message.slice(0, 60)} — using stale cache`);
+    } else {
+      // Approximate SGD-based fallback rates (ECB mid-rates, updated periodically)
+      const fallbackRates = { SGD: 1, USD: 0.756, JPY: 111.5, HKD: 5.90, TWD: 24.4, AUD: 1.165, GBP: 0.592, EUR: 0.698, KRW: 1040, CNY: 5.47, MYR: 3.30, IDR: 12200, THB: 26.3, PHP: 43.5, VND: 19200 };
+      rateCache = { rates: fallbackRates, source: 'hardcoded fallback (approximate)' };
+      rateCacheTime = 0; // force refresh next time
+      emit(`Exchange rates: ${e.message.slice(0, 60)} — using hardcoded fallback rates`);
+    }
   }
   return rateCache;
 }

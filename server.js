@@ -430,6 +430,31 @@ async function findNsuidsPhase1(gameUrl, emit) {
     }
   }
 
+  // ── Priority 1b: switchbrew fallback → US NSUID via ec.nintendo.com redirect ──
+  if (!usNsuid) {
+    const sbEntry = loadSwitchbrew(emit).find(e => {
+      const n = normStr(e.name);
+      return words.every(w => n.includes(w)) && e.regions.includes('USA');
+    });
+    if (sbEntry) {
+      const resolved = await resolveNsuidViaEc(sbEntry.id, 'US', emit);
+      if (resolved) {
+        add(resolved); usNsuid = resolved;
+        if (!gameName) gameName = sbEntry.name;
+        emit(`switchbrew → US NSUID: ${resolved}`);
+        // Also seed JP/HK via xref or ec.nintendo.com
+        const xref = loadXref(emit);
+        if (xref[sbEntry.id]) {
+          const rx = xref[sbEntry.id];
+          if (rx.jp) { add(rx.jp); jpNsuids.push(rx.jp); }
+          if (rx.hk) { add(rx.hk); hkNsuids.push(rx.hk); }
+          if (rx.au) add(rx.au);
+          emit(`xref (${sbEntry.id}): jp=${rx.jp||'-'} hk=${rx.hk||'-'} au=${rx.au||'-'}`);
+        }
+      }
+    }
+  }
+
   // ── Priority 2: sg-catalog local word match → SG NSUID ───────────────────────
   {
     const sgIds = findNsuidsViaTitledb('SG', searchSlug, emit);

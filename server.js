@@ -737,8 +737,21 @@ function findNsuidsViaTitledb(region, searchName, emit) {
     return words.every(w => n.includes(w) || (nEn && nEn.includes(w)));
   });
   if (!candidates.length) { emit(`titledb (${region}): no match for "${searchName}"`); return []; }
-  // Prefer entries where English name matches (more precise), then shortest name
+  const normSearch = normStr(searchName);
+  const DLC_TERMS = ['pass', 'bundle', 'edition', 'dlc', 'expansion', 'pack', 'add-on', 'addon', 'upgrade', 'demo', 'trial', 'lite'];
+  const searchHasDlc = DLC_TERMS.some(t => normSearch.includes(t));
+  // Prefer: exact name match > no-DLC-suffix (when search has no DLC term) > nameEn match > shortest name
   candidates.sort((a, b) => {
+    const aName = normStr(a.nameEn || a.name);
+    const bName = normStr(b.nameEn || b.name);
+    const aExact = aName === normSearch;
+    const bExact = bName === normSearch;
+    if (aExact !== bExact) return aExact ? -1 : 1;
+    if (!searchHasDlc) {
+      const aDlc = DLC_TERMS.some(t => aName.includes(t));
+      const bDlc = DLC_TERMS.some(t => bName.includes(t));
+      if (aDlc !== bDlc) return aDlc ? 1 : -1;
+    }
     const aEnMatch = a.nameEn ? words.every(w => normStr(a.nameEn).includes(w)) : false;
     const bEnMatch = b.nameEn ? words.every(w => normStr(b.nameEn).includes(w)) : false;
     if (aEnMatch !== bEnMatch) return aEnMatch ? -1 : 1;

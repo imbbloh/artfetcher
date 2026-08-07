@@ -758,8 +758,14 @@ function findNsuidsViaTitledb(region, searchName, emit) {
     return (a.nameEn || a.name).length - (b.nameEn || b.name).length;
   });
   const best = candidates[0];
-  const matchedName = best.nameEn || best.name;
-  emit(`titledb (${region}): matched "${matchedName}" → ${best.nsuid} (${candidates.length} candidate(s))`);
+  const bestName = normStr(best.nameEn || best.name);
+  // If the best match is a DLC/pass/bundle but the search has no such term, skip it —
+  // the base game is absent from this region's catalog; let Algolia/network find it.
+  if (!searchHasDlc && DLC_TERMS.some(t => bestName.includes(t))) {
+    emit(`titledb (${region}): only DLC variants found for "${searchName}" — skipping`);
+    return [];
+  }
+  emit(`titledb (${region}): matched "${best.nameEn || best.name}" → ${best.nsuid} (${candidates.length} candidate(s))`);
   return [best.nsuid];
 }
 

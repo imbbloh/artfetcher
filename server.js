@@ -1394,7 +1394,9 @@ function startTelegramBot() {
       }
 
     } else if (/^\/solver\b/.test(text)) {
-      const sm = text.match(/^\/solver\s+([A-Za-z]{3})\s+([\d.,]+)/i);
+      const smFwd = text.match(/^\/solver\s+([A-Za-z]{3})\s+([\d.,]+)/i);
+      const smRev = text.match(/^\/solver\s+([\d.,]+)\s+([A-Za-z]{3})/i);
+      const sm = smFwd || (smRev && [smRev[0], smRev[2], smRev[1]]);
       if (!sm) {
         await bot.sendMessage(chatId,
           '🧩 *eShop Price Solver*\nFinds up to 5 combinations of eShop games whose prices add up exactly to your target\\.\n\n' +

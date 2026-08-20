@@ -1429,15 +1429,16 @@ function startTelegramBot() {
         const MEDAL = ['🥇', '🥈', '🥉'];
         const fmt = c => solverConf.currency + (c / 100).toFixed(2);
         const medals = ['🥇', '🥈', '🥉'];
-        const parts = [`🧩 ${solverCur} ${solverAmount.toFixed(2)} — ${results.length} combination${results.length > 1 ? 's' : ''}:`];
+        await bot.sendMessage(chatId,
+          `🧩 *${escGc(solverCur)} ${escGc(solverAmount.toFixed(2))}* — ${results.length} combination${results.length > 1 ? 's' : ''}:`,
+          { parse_mode: 'MarkdownV2' });
         for (const [idx, combo] of results.entries()) {
           const sum = combo.reduce((a, g) => a + g.price, 0);
-          const medal = medals[idx] || `#${idx + 1}`;
-          const header = `${medal} ${combo.length} game${combo.length > 1 ? 's' : ''} (${fmt(sum)})`;
-          const gameLines = combo.map(g => `• ${g.title} (${g.url}) — ${fmt(g.price)}`);
-          parts.push(`\`\`\`\n${[header, ...gameLines].join('\n')}\n\`\`\``);
+          const medal = medals[idx] || `\\#${idx + 1}`;
+          const lines = [`${medal} ${combo.length} game${combo.length > 1 ? 's' : ''} \\(${escGc(fmt(sum))}\\)`];
+          for (const g of combo) lines.push(`   • [${escGc(g.title)}](${g.url}) — ${escGc(fmt(g.price))}`);
+          await bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'MarkdownV2', disable_web_page_preview: true });
         }
-        await bot.sendMessage(chatId, parts.join('\n'), { parse_mode: 'MarkdownV2', disable_web_page_preview: true });
       } catch (err) {
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
         await bot.sendMessage(chatId, `❌ Solver error: ${err.message}`);

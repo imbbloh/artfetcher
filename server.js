@@ -1418,7 +1418,16 @@ function startTelegramBot() {
       try {
         const games = await fetchSolverGames(solverConf.region);
         const targetCents = Math.round(solverAmount * 100);
-        const results = solveCombos(games, targetCents, 5);
+        const rawResults = solveCombos(games, targetCents, 20);
+        // Keep only combos that introduce no game already seen in a prior combo
+        const seenUrls = new Set();
+        const results = [];
+        for (const combo of rawResults) {
+          if (results.length >= 5) break;
+          if (combo.some(g => seenUrls.has(g.url))) continue;
+          combo.forEach(g => seenUrls.add(g.url));
+          results.push(combo);
+        }
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
         if (!results.length) {
           await bot.sendMessage(chatId,

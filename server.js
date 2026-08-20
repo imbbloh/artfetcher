@@ -1435,16 +1435,13 @@ function startTelegramBot() {
             { parse_mode: 'MarkdownV2' });
           return;
         }
-        const MEDAL = ['🥇', '🥈', '🥉'];
         const fmt = c => solverConf.currency + (c / 100).toFixed(2);
-        const medals = ['🥇', '🥈', '🥉'];
         await bot.sendMessage(chatId,
           `🧩 *${escGc(solverCur)} ${escGc(solverAmount.toFixed(2))}* — ${escGc(results.length + ' combination' + (results.length > 1 ? 's' : '') + ':')}`,
           { parse_mode: 'MarkdownV2' });
-        for (const [idx, combo] of results.entries()) {
+        for (const combo of results) {
           const sum = combo.reduce((a, g) => a + g.price, 0);
-          const medal = medals[idx] || '';
-          const lines = [`${medal} ${escGc(combo.length + ' game' + (combo.length > 1 ? 's' : '') + ' (' + fmt(sum) + ')')}`];
+          const lines = [escGc(combo.length + ' game' + (combo.length > 1 ? 's' : '') + ' (' + fmt(sum) + ')')];
           for (const g of combo) lines.push(`   • [${escGc(g.title)}](${g.url}) — ${escGc(fmt(g.price))}`);
           await bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'MarkdownV2', disable_web_page_preview: true });
         }

@@ -1428,16 +1428,18 @@ function startTelegramBot() {
         }
         const MEDAL = ['🥇', '🥈', '🥉'];
         const fmt = c => solverConf.currency + (c / 100).toFixed(2);
-        const blocks = [];
-        results.forEach((combo, idx) => {
+        await bot.sendMessage(chatId,
+          `🧩 ${solverCur} ${solverAmount.toFixed(2)} — ${results.length} combination${results.length > 1 ? 's' : ''}:`,
+          { disable_web_page_preview: true });
+        const medals = ['🥇', '🥈', '🥉'];
+        for (const [idx, combo] of results.entries()) {
           const sum = combo.reduce((a, g) => a + g.price, 0);
-          const medal = ['🥇', '🥈', '🥉'][idx] || `#${idx + 1}`;
+          const medal = medals[idx] || `#${idx + 1}`;
           const header = `${medal} ${combo.length} game${combo.length > 1 ? 's' : ''} (${fmt(sum)})`;
-          const gameLines = combo.map(g => `   • ${g.title} (${g.url}) — ${fmt(g.price)}`);
-          blocks.push([header, ...gameLines].join('\n'));
-        });
-        const header = `🧩 ${solverCur} ${solverAmount.toFixed(2)} — ${results.length} combination${results.length > 1 ? 's' : ''}:\n`;
-        await bot.sendMessage(chatId, header + blocks.join('\n\n'), { disable_web_page_preview: true });
+          const gameLines = combo.map(g => `• ${g.title} (${g.url}) — ${fmt(g.price)}`);
+          const block = [header, ...gameLines].join('\n');
+          await bot.sendMessage(chatId, `\`\`\`\n${block}\n\`\`\``, { parse_mode: 'MarkdownV2', disable_web_page_preview: true });
+        }
       } catch (err) {
         await bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
         await bot.sendMessage(chatId, `❌ Solver error: ${err.message}`);

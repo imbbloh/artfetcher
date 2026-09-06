@@ -54,16 +54,18 @@ let gcPrices = {
   MXN: { '100': 34, '350': 119 },
   AUD: { '15': 77.5 },
 };
+// Taobao (or other) reference URLs per denomination: { USD: { '10': 'https://...' } }
+let gcLinks = {};
 
 function loadGcPrices() {
   try {
     const fs = require('fs');
     if (fs.existsSync(GC_PRICES_FILE)) {
       const saved = JSON.parse(fs.readFileSync(GC_PRICES_FILE, 'utf8'));
-      // Fully replace gcPrices from file — avoids stale hardcoded denominations
-      for (const [cur, denoms] of Object.entries(saved))
+      for (const [cur, denoms] of Object.entries(saved.prices || saved))
         if (cur in gcPrices && denoms && typeof denoms === 'object')
           gcPrices[cur] = Object.fromEntries(Object.entries(denoms).filter(([, v]) => typeof v === 'number' && v > 0));
+      if (saved.links) gcLinks = saved.links;
     }
   } catch {}
 }
@@ -72,7 +74,7 @@ function saveGcPrices() {
   try {
     const fs = require('fs');
     fs.mkdirSync(path.dirname(GC_PRICES_FILE), { recursive: true });
-    fs.writeFileSync(GC_PRICES_FILE, JSON.stringify(gcPrices, null, 2));
+    fs.writeFileSync(GC_PRICES_FILE, JSON.stringify({ prices: gcPrices, links: gcLinks }, null, 2));
   } catch {}
 }
 
@@ -1312,7 +1314,11 @@ function startTelegramBot() {
         const card = escGc(`${sym}${denom}`);
         if (cny == null) { lines.push(`  • ${card} — _not set_`); continue; }
         const sgd = cnyToSgd ? ` ≈ *S\\$${escGc((cny * cnyToSgd).toFixed(2))}*` : '';
-        lines.push(`  • ${card} → ${escGc(String(cny))} CNY${sgd}`);
+        const url = gcLinks[cur]?.[denom];
+        const cnyStr = url
+          ? `[${escGc(String(cny))} CNY](${url})`
+          : `${escGc(String(cny))} CNY`;
+        lines.push(`  • ${card} → ${cnyStr}${sgd}`);
       }
       lines.push('');
     }
@@ -1455,17 +1461,18 @@ function startTelegramBot() {
       await bot.sendMessage(chatId, formatGcPrices(), { parse_mode: 'MarkdownV2' });
 
     } else if (/^\/updategiftcard\b/.test(text)) {
-      // /updategiftcard USD 10 60  — update an existing denomination
-      const m = text.match(/^\/updategiftcard\s+([A-Z]{3})\s+([\d.]+)\s+([\d.]+)/i);
+      // /updategiftcard USD 10 60 [url]  — update an existing denomination
+      const m = text.match(/^\/updategiftcard\s+([A-Z]{3})\s+([\d.]+)\s+([\d.]+)(?:\s+(https?:\/\/\S+))?/i);
       if (!m) {
         await bot.sendMessage(chatId,
-          '⚠️ Usage: `/updategiftcard USD 10 60`\n_currency · denomination · CNY price_\nSupported: ' + escGc(GC_CURRENCIES.join(', ')),
+          '⚠️ Usage: `/updategiftcard USD 10 60` _\\[taobao\\_url\\]_\n_currency · denomination · CNY price · optional link_\nSupported: ' + escGc(GC_CURRENCIES.join(', ')),
           { parse_mode: 'MarkdownV2' });
         return;
       }
       const cur = m[1].toUpperCase();
       const denom = m[2];
       const cny = parseFloat(m[3]);
+      const url = m[4] || null;
       if (!(cur in gcPrices) || !(denom in gcPrices[cur]) || isNaN(cny) || cny <= 0) {
         const validDenoms = cur in gcPrices ? Object.keys(gcPrices[cur]).join(', ') : 'n/a';
         await bot.sendMessage(chatId,
@@ -1474,24 +1481,27 @@ function startTelegramBot() {
         return;
       }
       gcPrices[cur][denom] = cny;
+      if (url) { if (!gcLinks[cur]) gcLinks[cur] = {}; gcLinks[cur][denom] = url; }
       saveGcPrices();
       cache.clear();
+      const linkNote = url ? `\nLink saved: ${escGc(url.slice(0, 60))}` : '';
       await bot.sendMessage(chatId,
-        `✅ *${cur} ${denom}* gift card updated to *${escGc(cny)} CNY*\\.\nPrice caches cleared\\.`,
+        `✅ *${cur} ${denom}* gift card updated to *${escGc(String(cny))} CNY*\\.${linkNote}\nPrice caches cleared\\.`,
         { parse_mode: 'MarkdownV2' });
 
     } else if (/^\/addgiftcard\b/.test(text)) {
       // /addgiftcard USD 25 150  — add a new denomination
-      const m = text.match(/^\/addgiftcard\s+([A-Z]{3})\s+([\d.]+)\s+([\d.]+)/i);
+      const m = text.match(/^\/addgiftcard\s+([A-Z]{3})\s+([\d.]+)\s+([\d.]+)(?:\s+(https?:\/\/\S+))?/i);
       if (!m) {
         await bot.sendMessage(chatId,
-          '⚠️ Usage: `/addgiftcard USD 25 150`\n_currency · denomination · CNY price_\nSupported: ' + escGc(GC_CURRENCIES.join(', ')),
+          '⚠️ Usage: `/addgiftcard USD 25 150` _\\[taobao\\_url\\]_\n_currency · denomination · CNY price · optional link_\nSupported: ' + escGc(GC_CURRENCIES.join(', ')),
           { parse_mode: 'MarkdownV2' });
         return;
       }
       const cur = m[1].toUpperCase();
       const denom = m[2];
       const cny = parseFloat(m[3]);
+      const url = m[4] || null;
       if (!(cur in gcPrices) || isNaN(cny) || cny <= 0) {
         await bot.sendMessage(chatId,
           `⚠️ Unsupported currency\\. Supported: ${escGc(GC_CURRENCIES.join(', '))}`,
@@ -1505,10 +1515,12 @@ function startTelegramBot() {
         return;
       }
       gcPrices[cur][denom] = cny;
+      if (url) { if (!gcLinks[cur]) gcLinks[cur] = {}; gcLinks[cur][denom] = url; }
       saveGcPrices();
       cache.clear();
+      const linkNote2 = url ? `\nLink saved: ${escGc(url.slice(0, 60))}` : '';
       await bot.sendMessage(chatId,
-        `✅ *${cur} ${denom}* gift card added at *${escGc(cny)} CNY*\\.\nPrice caches cleared\\.`,
+        `✅ *${cur} ${denom}* gift card added at *${escGc(String(cny))} CNY*\\.${linkNote2}\nPrice caches cleared\\.`,
         { parse_mode: 'MarkdownV2' });
 
     } else if (/^\/start|\/help/.test(text)) {

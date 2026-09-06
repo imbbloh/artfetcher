@@ -1330,11 +1330,7 @@ function startTelegramBot() {
     return lines.join('\n');
   }
 
-  // Extract Taobao item ID from share text and return taobao:// deep link for iOS app.
-  // Falls back to the raw https URL if no item ID found.
   function toTaobaoAppUrl(text) {
-    const idMatch = text.match(/[?&]id=(\d+)/);
-    if (idMatch) return `taobao://item.htm?id=${idMatch[1]}`;
     const urlMatch = text.match(/https?:\/\/\S+/);
     return urlMatch ? urlMatch[0] : null;
   }

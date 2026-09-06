@@ -1330,6 +1330,15 @@ function startTelegramBot() {
     return lines.join('\n');
   }
 
+  // Extract Taobao item ID from share text and return taobao:// deep link for iOS app.
+  // Falls back to the raw https URL if no item ID found.
+  function toTaobaoAppUrl(text) {
+    const idMatch = text.match(/[?&]id=(\d+)/);
+    if (idMatch) return `taobao://item.htm?id=${idMatch[1]}`;
+    const urlMatch = text.match(/https?:\/\/\S+/);
+    return urlMatch ? urlMatch[0] : null;
+  }
+
   // ── Guided gift-card update: inline keyboard callbacks ────────────────────────
   bot.on('callback_query', async (query) => {
     const chatId = query.message.chat.id;
@@ -1377,10 +1386,9 @@ function startTelegramBot() {
     const gcState = gcUpdateState.get(chatId);
     if (gcState?.step === 'value' && !/^\//.test(text)) {
       gcUpdateState.delete(chatId);
-      const urlMatch = text.match(/https?:\/\/\S+/);
+      const url = toTaobaoAppUrl(text);
       const cnyMatch = text.match(/[\d.]+/);
       const cny = cnyMatch ? parseFloat(cnyMatch[0]) : NaN;
-      const url = urlMatch ? urlMatch[0] : null;
       const { cur, denom } = gcState;
       const GC_SYMBOL = { USD: '$', BRL: 'R$', CAD: 'CA$', MXN: 'MX$', AUD: 'A$' };
       const sym = GC_SYMBOL[cur] || cur;
@@ -1540,7 +1548,6 @@ function startTelegramBot() {
 
     } else if (/^\/addgiftcard\b/.test(text)) {
       // /addgiftcard USD 25 150  — add a new denomination
-      const urlMatch2 = text.match(/https?:\/\/\S+/);
       const m = text.match(/^\/addgiftcard\s+([A-Z]{3})\s+([\d.]+)\s+([\d.]+)/i);
       if (!m) {
         await bot.sendMessage(chatId,
@@ -1551,7 +1558,7 @@ function startTelegramBot() {
       const cur = m[1].toUpperCase();
       const denom = m[2];
       const cny = parseFloat(m[3]);
-      const url = urlMatch2 ? urlMatch2[0] : null;
+      const url = toTaobaoAppUrl(text);
       if (!(cur in gcPrices) || isNaN(cny) || cny <= 0) {
         await bot.sendMessage(chatId,
           `⚠️ Unsupported currency\\. Supported: ${escGc(GC_CURRENCIES.join(', '))}`,

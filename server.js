@@ -1258,6 +1258,9 @@ function startTelegramBot() {
   const webhookUrl = process.env.TELEGRAM_WEBHOOK_URL; // e.g. https://artfetcher-4vt8.onrender.com
   const bot = new TelegramBot(token, { polling: false });
 
+  // State for the guided /updategiftcard flow: chatId -> { step, cur, denom, promptMsgId }
+  const gcUpdateState = new Map();
+
   if (webhookUrl) {
     // Webhook mode: Render routes HTTP to one instance at a time — no 409 conflicts
     app.use(express.json());
@@ -1327,9 +1330,75 @@ function startTelegramBot() {
     return lines.join('\n');
   }
 
+  // ── Guided gift-card update: inline keyboard callbacks ────────────────────────
+  bot.on('callback_query', async (query) => {
+    const chatId = query.message.chat.id;
+    const data = query.data || '';
+    await bot.answerCallbackQuery(query.id).catch(() => {});
+
+    if (data.startsWith('gc_cur:')) {
+      const cur = data.slice(7);
+      const denoms = Object.keys(gcPrices[cur] || {});
+      if (!denoms.length) return;
+      gcUpdateState.set(chatId, { step: 'denom', cur });
+      const GC_SYMBOL = { USD: '$', BRL: 'R$', CAD: 'CA$', MXN: 'MX$', AUD: 'A$' };
+      const sym = GC_SYMBOL[cur] || cur;
+      const denomButtons = denoms.map(d => {
+        const cny = gcPrices[cur][d];
+        return [{ text: `${sym}${d} (${cny} CNY)`, callback_data: `gc_denom:${cur}:${d}` }];
+      });
+      await bot.editMessageText(`🎴 *Update Gift Card Price*\n${GC_FLAG[cur]} *${cur}* — select denomination:`, {
+        chat_id: chatId, message_id: query.message.message_id,
+        parse_mode: 'MarkdownV2',
+        reply_markup: { inline_keyboard: denomButtons },
+      });
+
+    } else if (data.startsWith('gc_denom:')) {
+      const [, cur, denom] = data.split(':');
+      const GC_SYMBOL = { USD: '$', BRL: 'R$', CAD: 'CA$', MXN: 'MX$', AUD: 'A$' };
+      const sym = GC_SYMBOL[cur] || cur;
+      const currentCny = gcPrices[cur]?.[denom];
+      const currentUrl = gcLinks[cur]?.[denom];
+      gcUpdateState.set(chatId, { step: 'value', cur, denom });
+      const urlLine = currentUrl ? `\n_Current link: [Taobao](${currentUrl})_` : '';
+      const promptMsg = await bot.editMessageText(
+        `🎴 *Update Gift Card Price*\n${GC_FLAG[cur]} *${cur} ${sym}${denom}* — currently *${escGc(String(currentCny))} CNY*${urlLine}\n\nReply with the new CNY price\\, optionally followed by a Taobao share link\\.`,
+        { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'MarkdownV2', reply_markup: { inline_keyboard: [] } }
+      );
+      gcUpdateState.set(chatId, { step: 'value', cur, denom, promptMsgId: promptMsg.message_id });
+    }
+  });
+
   bot.on('message', async (msg) => {
     const chatId = msg.chat.id;
     const text = (msg.text || '').trim();
+
+    // ── Guided gift-card update: step 3 — receive CNY value ───────────────────
+    const gcState = gcUpdateState.get(chatId);
+    if (gcState?.step === 'value' && !/^\//.test(text)) {
+      gcUpdateState.delete(chatId);
+      const urlMatch = text.match(/https?:\/\/\S+/);
+      const cnyMatch = text.match(/[\d.]+/);
+      const cny = cnyMatch ? parseFloat(cnyMatch[0]) : NaN;
+      const url = urlMatch ? urlMatch[0] : null;
+      const { cur, denom } = gcState;
+      const GC_SYMBOL = { USD: '$', BRL: 'R$', CAD: 'CA$', MXN: 'MX$', AUD: 'A$' };
+      const sym = GC_SYMBOL[cur] || cur;
+      if (isNaN(cny) || cny <= 0) {
+        await bot.sendMessage(chatId, '⚠️ Invalid price\\. Please enter a number e\\.g\\. `60` or `60 https://e\\.tb\\.cn/\\.\\.\\.`', { parse_mode: 'MarkdownV2' });
+        return;
+      }
+      gcPrices[cur][denom] = cny;
+      if (url) { if (!gcLinks[cur]) gcLinks[cur] = {}; gcLinks[cur][denom] = url; }
+      saveGcPrices();
+      cache.clear();
+      const linkNote = url ? `\nLink saved ✓` : '';
+      await bot.sendMessage(chatId,
+        `✅ *${GC_FLAG[cur]} ${cur} ${sym}${denom}* updated to *${escGc(String(cny))} CNY*\\.${linkNote}\nPrice caches cleared\\.`,
+        { parse_mode: 'MarkdownV2' });
+      return;
+    }
+
     const match = text.match(ESHOP_URL_RE);
 
     if (match) {
@@ -1461,34 +1530,13 @@ function startTelegramBot() {
       await bot.sendMessage(chatId, formatGcPrices(), { parse_mode: 'MarkdownV2' });
 
     } else if (/^\/updategiftcard\b/.test(text)) {
-      // /updategiftcard USD 10 60 [url]  — update an existing denomination
-      const urlMatch = text.match(/https?:\/\/\S+/);
-      const m = text.match(/^\/updategiftcard\s+([A-Z]{3})\s+([\d.]+)\s+([\d.]+)/i);
-      if (!m) {
-        await bot.sendMessage(chatId,
-          '⚠️ Usage: `/updategiftcard USD 10 60` _\\[taobao\\_url\\]_\n_currency · denomination · CNY price · optional link_\nSupported: ' + escGc(GC_CURRENCIES.join(', ')),
-          { parse_mode: 'MarkdownV2' });
-        return;
-      }
-      const cur = m[1].toUpperCase();
-      const denom = m[2];
-      const cny = parseFloat(m[3]);
-      const url = urlMatch ? urlMatch[0] : null;
-      if (!(cur in gcPrices) || !(denom in gcPrices[cur]) || isNaN(cny) || cny <= 0) {
-        const validDenoms = cur in gcPrices ? Object.keys(gcPrices[cur]).join(', ') : 'n/a';
-        await bot.sendMessage(chatId,
-          `⚠️ Invalid\\. ${escGc(cur)} denominations: ${escGc(validDenoms)}\nSupported currencies: ${escGc(GC_CURRENCIES.join(', '))}`,
-          { parse_mode: 'MarkdownV2' });
-        return;
-      }
-      gcPrices[cur][denom] = cny;
-      if (url) { if (!gcLinks[cur]) gcLinks[cur] = {}; gcLinks[cur][denom] = url; }
-      saveGcPrices();
-      cache.clear();
-      const linkNote = url ? `\nLink saved: ${escGc(url.slice(0, 60))}` : '';
-      await bot.sendMessage(chatId,
-        `✅ *${cur} ${denom}* gift card updated to *${escGc(String(cny))} CNY*\\.${linkNote}\nPrice caches cleared\\.`,
-        { parse_mode: 'MarkdownV2' });
+      // Launch guided flow: step 1 — pick currency
+      gcUpdateState.set(chatId, { step: 'currency' });
+      const curButtons = GC_CURRENCIES.map(c => [{ text: `${GC_FLAG[c]} ${c}`, callback_data: `gc_cur:${c}` }]);
+      await bot.sendMessage(chatId, '🎴 *Update Gift Card Price*\nSelect currency:', {
+        parse_mode: 'MarkdownV2',
+        reply_markup: { inline_keyboard: curButtons },
+      });
 
     } else if (/^\/addgiftcard\b/.test(text)) {
       // /addgiftcard USD 25 150  — add a new denomination

@@ -1380,27 +1380,31 @@ function startTelegramBot() {
 
     // ── Guided gift-card update: step 3 — receive CNY value ───────────────────
     const gcState = gcUpdateState.get(chatId);
-    if (gcState?.step === 'value' && !/^\//.test(text)) {
-      gcUpdateState.delete(chatId);
-      const url = toTaobaoAppUrl(text);
-      const cnyMatch = text.match(/[\d.]+/);
-      const cny = cnyMatch ? parseFloat(cnyMatch[0]) : NaN;
-      const { cur, denom } = gcState;
-      const GC_SYMBOL = { USD: '$', BRL: 'R$', CAD: 'CA$', MXN: 'MX$', AUD: 'A$' };
-      const sym = GC_SYMBOL[cur] || cur;
-      if (isNaN(cny) || cny <= 0) {
-        await bot.sendMessage(chatId, '⚠️ Invalid price\\. Please enter a number e\\.g\\. `60` or `60 https://e\\.tb\\.cn/\\.\\.\\.`', { parse_mode: 'MarkdownV2' });
+    if (gcState?.step === 'value') {
+      if (/^\//.test(text)) {
+        gcUpdateState.delete(chatId); // let the command fall through normally
+      } else {
+        gcUpdateState.delete(chatId);
+        const url = toTaobaoAppUrl(text);
+        const cnyMatch = text.match(/[\d.]+/);
+        const cny = cnyMatch ? parseFloat(cnyMatch[0]) : NaN;
+        const { cur, denom } = gcState;
+        const GC_SYMBOL = { USD: '$', BRL: 'R$', CAD: 'CA$', MXN: 'MX$', AUD: 'A$' };
+        const sym = GC_SYMBOL[cur] || cur;
+        if (isNaN(cny) || cny <= 0) {
+          await bot.sendMessage(chatId, '⚠️ Invalid price\\. Please enter a number e\\.g\\. `60` or `60 https://e\\.tb\\.cn/\\.\\.\\.`', { parse_mode: 'MarkdownV2' });
+          return;
+        }
+        gcPrices[cur][denom] = cny;
+        if (url) { if (!gcLinks[cur]) gcLinks[cur] = {}; gcLinks[cur][denom] = url; }
+        saveGcPrices();
+        cache.clear();
+        const linkNote = url ? `\nLink saved ✓` : '';
+        await bot.sendMessage(chatId,
+          `✅ *${GC_FLAG[cur]} ${cur} ${sym}${denom}* updated to *${escGc(String(cny))} CNY*\\.${linkNote}\nPrice caches cleared\\.`,
+          { parse_mode: 'MarkdownV2' });
         return;
       }
-      gcPrices[cur][denom] = cny;
-      if (url) { if (!gcLinks[cur]) gcLinks[cur] = {}; gcLinks[cur][denom] = url; }
-      saveGcPrices();
-      cache.clear();
-      const linkNote = url ? `\nLink saved ✓` : '';
-      await bot.sendMessage(chatId,
-        `✅ *${GC_FLAG[cur]} ${cur} ${sym}${denom}* updated to *${escGc(String(cny))} CNY*\\.${linkNote}\nPrice caches cleared\\.`,
-        { parse_mode: 'MarkdownV2' });
-      return;
     }
 
     const match = text.match(ESHOP_URL_RE);

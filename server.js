@@ -1462,7 +1462,8 @@ function startTelegramBot() {
 
     } else if (/^\/updategiftcard\b/.test(text)) {
       // /updategiftcard USD 10 60 [url]  — update an existing denomination
-      const m = text.match(/^\/updategiftcard\s+([A-Z]{3})\s+([\d.]+)\s+([\d.]+)(?:\s+(https?:\/\/\S+))?/i);
+      const urlMatch = text.match(/https?:\/\/\S+/);
+      const m = text.match(/^\/updategiftcard\s+([A-Z]{3})\s+([\d.]+)\s+([\d.]+)/i);
       if (!m) {
         await bot.sendMessage(chatId,
           '⚠️ Usage: `/updategiftcard USD 10 60` _\\[taobao\\_url\\]_\n_currency · denomination · CNY price · optional link_\nSupported: ' + escGc(GC_CURRENCIES.join(', ')),
@@ -1472,7 +1473,7 @@ function startTelegramBot() {
       const cur = m[1].toUpperCase();
       const denom = m[2];
       const cny = parseFloat(m[3]);
-      const url = m[4] || null;
+      const url = urlMatch ? urlMatch[0] : null;
       if (!(cur in gcPrices) || !(denom in gcPrices[cur]) || isNaN(cny) || cny <= 0) {
         const validDenoms = cur in gcPrices ? Object.keys(gcPrices[cur]).join(', ') : 'n/a';
         await bot.sendMessage(chatId,
@@ -1491,7 +1492,8 @@ function startTelegramBot() {
 
     } else if (/^\/addgiftcard\b/.test(text)) {
       // /addgiftcard USD 25 150  — add a new denomination
-      const m = text.match(/^\/addgiftcard\s+([A-Z]{3})\s+([\d.]+)\s+([\d.]+)(?:\s+(https?:\/\/\S+))?/i);
+      const urlMatch2 = text.match(/https?:\/\/\S+/);
+      const m = text.match(/^\/addgiftcard\s+([A-Z]{3})\s+([\d.]+)\s+([\d.]+)/i);
       if (!m) {
         await bot.sendMessage(chatId,
           '⚠️ Usage: `/addgiftcard USD 25 150` _\\[taobao\\_url\\]_\n_currency · denomination · CNY price · optional link_\nSupported: ' + escGc(GC_CURRENCIES.join(', ')),
@@ -1501,7 +1503,7 @@ function startTelegramBot() {
       const cur = m[1].toUpperCase();
       const denom = m[2];
       const cny = parseFloat(m[3]);
-      const url = m[4] || null;
+      const url = urlMatch2 ? urlMatch2[0] : null;
       if (!(cur in gcPrices) || isNaN(cny) || cny <= 0) {
         await bot.sendMessage(chatId,
           `⚠️ Unsupported currency\\. Supported: ${escGc(GC_CURRENCIES.join(', '))}`,

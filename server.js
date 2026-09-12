@@ -71,11 +71,33 @@ function loadGcPrices() {
 }
 
 function saveGcPrices() {
+  const content = JSON.stringify({ prices: gcPrices, links: gcLinks }, null, 2);
   try {
     const fs = require('fs');
     fs.mkdirSync(path.dirname(GC_PRICES_FILE), { recursive: true });
-    fs.writeFileSync(GC_PRICES_FILE, JSON.stringify({ prices: gcPrices, links: gcLinks }, null, 2));
+    fs.writeFileSync(GC_PRICES_FILE, content);
   } catch {}
+  // Also commit to GitHub so changes survive Render redeploys
+  const token = process.env.GITHUB_TOKEN;
+  const repo = process.env.GITHUB_REPO || 'imbbloh/artfetcher';
+  if (token) {
+    const filePath = 'data/giftcard-prices.json';
+    const apiBase = `https://api.github.com/repos/${repo}/contents/${filePath}`;
+    (async () => {
+      try {
+        const { default: axios } = await import('axios');
+        const headers = { Authorization: `token ${token}`, 'User-Agent': 'artfetcher-bot' };
+        const existing = await axios.get(apiBase, { headers }).catch(() => null);
+        const sha = existing?.data?.sha;
+        await axios.put(apiBase, {
+          message: 'Update gift card prices',
+          content: Buffer.from(content).toString('base64'),
+          ...(sha ? { sha } : {}),
+        }, { headers });
+        console.log('[gc] Committed giftcard-prices.json to GitHub');
+      } catch (e) { console.error('[gc] GitHub commit failed:', e.message); }
+    })();
+  }
 }
 
 loadGcPrices();

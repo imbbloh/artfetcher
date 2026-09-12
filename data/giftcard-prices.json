@@ -5,7 +5,7 @@
       "10": 59
     },
     "BRL": {
-      "30": 40.9,
+      "30": 40,
       "50": 59
     },
     "CAD": {
@@ -22,8 +22,10 @@
   },
   "links": {
     "USD": {
-      "5": "https://e.tb.cn/h.8s5F4fHCrtLJPGc?tk=CT2BTiQ2KuR",
-      "10": "https://e.tb.cn/h.8s5FYiHzkrRezMa?tk=2ttNTiQ2uB0"
+      "5": "https://e.tb.cn/h.8s5F4fHCrtLJPGc?tk=CT2BTiQ2KuR"
+    },
+    "BRL": {
+      "30": "https://e.tb.cn/h.8qOaYdutECtxVKJ?tk=iGtwTiQ3frc"
     }
   }
 }
